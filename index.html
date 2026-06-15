@@ -328,9 +328,9 @@ function buildPrompt(review){
 - 每个标签要短（2~8 字，像 安静、运行速度快、性价比高、体积小巧、控制激光雕刻机），不要整句；多个标签用中文顿号"、"分隔。
 
 【四个字段】
-- 应用场景：用它做什么（只写真说了的；"日常任务/其他事情"这种泛词不写）
-- 产品优势：夸的优点
-- 问题反馈：缺点 / 问题
+- 应用场景：用户【拿这台迷你电脑来做什么】的用途/场景。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、连接电视、做媒体服务器、远程办公、跑虚拟机、编程。⚠️不是"用途"的一律不要写：像 电脑、运行、视频、照片、性能、设置 这种（它们是设备本身/一个动作/泛词，填不进"我用它来＿＿"）。判断不出明确用途就留空。
+- 产品优势：用户夸的优点（如 速度快、体积小巧、安静、性价比高、散热好）。
+- 问题反馈：用户反映的【具体缺点或故障】，用【简短短语】概括（约 4~10 字，如 风扇噪音大、4K视频卡顿、蓝牙故障、内存不够、开机慢、售后差、无法开机），【不要照抄整句】——例如把"开机后要等几分钟才稳定"概括成"开机慢"。必须是具体问题；不要写 其他、问题、一般、还行 这种没内容的词。没有明确问题就留空。
 - 相关软件：只要软件名和游戏名（硬件/接口/配件不算软件，如 HDMI、固态硬盘、显卡、KVM 不要写）；中文游戏名加《》
 
 只输出一个 JSON 对象，不要任何额外文字、不要 markdown：
@@ -404,7 +404,7 @@ function parseFieldGroups(text, isSoftware){
     if(!line) return;
     const sec = (line.match(/^[\[【](.+?)[\]】]\s*$/) || line.match(/^#+\s*(.+?)\s*$/));
     if(sec){ mode = /剔除|硬件|删除|删掉|剔掉/.test(sec[1]) ? "drop" : "group"; return; }
-    if(isSoftware && mode==="drop"){
+    if(mode==="drop"){
       // 只按顿号/逗号分隔(不按空格,否则"双4K HDMI接口"这种带空格的硬件名会被拆碎、漏剔)
       line.split(/、|，|,|;|；/).map(x=> x.trim().replace(/^["'`【\[]+/,"").replace(/["'`】\]。]+$/,"")).filter(Boolean).forEach(h=> drop.add(h));
       return;
@@ -412,7 +412,11 @@ function parseFieldGroups(text, isSoftware){
     const parts = line.split(/<=|<-|⇐|←|=>|→|::|=/);
     if(parts.length>=2){
       const std = parts[0].replace(/[【】\[\]"'`]/g,"").trim();
-      parts.slice(1).join(" ").split(/、|，|,|;|；/).map(x=>x.trim()).filter(Boolean).forEach(mem=>{ if(std) map.set(mem, std); });
+      const PH = /^(标准词|标准名|合并后的词|名字|写法\d*|原写法\d*|同义词\d*)$/;   // 提示词里的占位/示例词,别误当真实标签
+      const JUNK = /其他|其它|其余|杂项|等等|若干/;                                  // "其他X"这类筐:作废该组,成员保留原样,绝不被冲成"其他"
+      if(std && !PH.test(std) && !JUNK.test(std)){
+        parts.slice(1).join(" ").split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && !PH.test(x)).forEach(mem=> map.set(mem, std));
+      }
     }
   });
   return {map, drop};
@@ -421,31 +425,43 @@ function parseFieldGroups(text, isSoftware){
 /* 对一个字段做归并:纯文本行格式(不是嵌套 JSON),flash 最稳。空输入直接返回空映射(不浪费调用) */
 async function aggregateField(key, fieldName, tags){
   if(!tags.length) return {map:new Map(), drop:new Set()};
-  const isSoftware = fieldName==="相关软件";
-  const prompt = isSoftware
-    ? `下面是从某迷你电脑评论里如实提取的"相关软件"候选（已去重）。请做两件事：
-①找出【同一软件/游戏的不同写法】并归并到一个标准名（只有一种写法、没有重复的就不用管）；②把其中的硬件/接口/配件（如 HDMI、固态硬盘、SSD、硬盘、内存、显卡、摄像头、打印机、KVM、显示器、电源、风扇、扩展坞、网线、读卡器 等）挑出来剔除。
-只能用下面真实出现的词，绝不新增。
+  let kind, dropRule;
+  if(fieldName==="相关软件"){
+    kind = "软件名 / 游戏名";
+    dropRule = "硬件 / 接口 / 配件（它们不是软件，例如 HDMI、固态硬盘、SSD、内存、显卡、摄像头、打印机、KVM、显示器、电源、风扇、扩展坞、网线、读卡器）";
+  }else if(fieldName==="应用场景"){
+    kind = "用户拿这台电脑【来做什么】的用途/场景（能填进\"我用它来＿＿\"或\"把它当＿＿用\"，如 办公、玩游戏、看视频、连接电视、做媒体服务器、远程办公、跑虚拟机）";
+    dropRule = "不是\"用途\"的词——设备本身、一个动作、或泛词，填不进\"我用它来＿＿\"的，例如 电脑、运行、视频、照片、性能、设置、好用、外观";
+  }else if(fieldName==="问题反馈"){
+    kind = "用户反映的具体缺点 / 故障（如 风扇噪音大、4K视频卡顿、蓝牙故障、内存不够、售后差）";
+    dropRule = "没有具体内容的笼统词，例如 其他、其它、杂项、问题、一般、还行";
+  }else{ // 产品优势
+    kind = "用户夸的优点（如 运行速度快、体积小巧、性价比高、散热好）";
+    dropRule = "完全空泛、等于没说的词，例如 好、不错、一般、可以、还行（除此之外的优点【全部保留】）";
+  }
+  const prompt = `下面是从某迷你电脑评论里如实提取的"${fieldName}"候选标签（已去重）。这一栏【只应该放】：${kind}。
 
-输出【纯文本】，分两段，不要 JSON、不要解释、不要多余说明：
+请做两件事，只能用下面真实出现的词、绝不新增：
+① 归并：把【意思相同或高度近似】的合并成一个【完整、能独立看懂】的词（2~8 字，如 运行速度快、内存不足、接口不够）。不要缩成单个泛名词（如 内存、接口、性能、运行、功能 这种看不出具体意思的）。只出现一次、没有同义词的不用列（系统会自动原样保留）。
+② 剔除（务必保守、少剔）：只把【明确不该出现在这一栏】的挑出来——也就是 ${dropRule}。除此之外【一律保留】；【绝不能因为觉得某个词"比较笼统/没信息量"就大量删除】，拿不准就留着。被剔除的应该只是少数几个，绝不该占大头。
+【铁律】绝不要用 其他、其它、其余、其他优点、其他问题、杂项、等等 这类词当标准词或分组名（一个都不许出现）；归不进某个标准词的，就让它【原样保留】原本的具体说法；整栏真没内容就让它空着，绝不用"其他"占位。
+
+输出【纯文本】，分两段，不要 JSON、不要解释：
 [保留]
-（只列【需要合并】的软件，格式"标准名 <= 写法1、写法2"；没有重复写法的软件【不用列出来】）
+每行一个合并组，写成「合并后的词 <= 原写法1、原写法2」。示例（只是示范格式，别照抄示例里的词）：运行速度快 <= 速度快、开机快。没有要合并的就把这段留空。
 [剔除]
-（一行，把所有硬件/接口/配件用顿号隔开；没有就留空）
+一行，把该剔除的词用顿号隔开；没有就留空。
 
-候选：
-${tags.join("、")}`
-    : `下面是从某迷你电脑评论里如实提取的"${fieldName}"标签（已去重）。请只找出【意思相同或高度近似、需要合并】的同义词组，每组归并成一个简短标准词（2~8 字，像 安静、运行速度快、性价比高、散热好）。
-
-【非常重要】只输出【需要合并的组】（即有 2 个及以上不同写法的）。**只出现一次、没有同义词的标签不要列出来**（系统会自动原样保留它们），具体特异的（如 控制激光雕刻机、说明书字体太小）也不用列。这样输出会很短。
-只能用下面真实出现的词，绝不新增。
-
-输出【纯文本】，每行一组，格式"标准词 <= 同义词1、同义词2"。如果没有任何需要合并的组，就只输出一个字"无"。不要 JSON、不要解释。
-
-标签：
+候选标签：
 ${tags.join("、")}`;
   const out = await callAI(key, prompt);
-  return parseFieldGroups(out, isSoftware);
+  const res = parseFieldGroups(out);
+  // 安全阀:非软件字段若剔除超过 40%(且>3个)视为模型抽风、过度删除,放弃本次剔除、只保留归并,防止整栏被删空
+  if(fieldName!=="相关软件" && res.drop.size > 3 && res.drop.size > tags.length*0.4){
+    logLine(`  归并:字段[${fieldName}]剔除过多(${res.drop.size}/${tags.length})，已忽略剔除、只做归并`, "warn");
+    res.drop = new Set();
+  }
+  return res;
 }
 
 /* 用某字段的分组,把一条标签串:剔硬件 → 套标准说法 → 去重(没分到组的原样保留,绝不丢内容) */
@@ -616,6 +632,26 @@ function logLine(msg, type){
 }
 
 
+/* 把汇总串转成 Excel 富文本:字段名加粗;只把【次数最高的前 3 个】"（N次）"标红(其余黑色) */
+function summaryRich(label, str){
+  const runs = [{text: label, font:{bold:true}}];
+  const parts = String(str||"").split("、").filter(Boolean);
+  let counted = 0;                                  // 已遇到几个带次数的(汇总已按次数降序,前3个即最高3个)
+  parts.forEach((part, i)=>{
+    if(i>0) runs.push({text:"、"});
+    const m = part.match(/^(.*?)（(\d+)次）$/);
+    if(m){
+      runs.push({text: m[1]});
+      const red = counted < 3;
+      runs.push(red ? {text:`（${m[2]}次）`, font:{color:{argb:"FFFF0000"}, bold:true}} : {text:`（${m[2]}次）`});
+      counted++;
+    }else{
+      runs.push({text: part});
+    }
+  });
+  return {richText: runs};
+}
+
 /* ---------- 导出 Excel(按规范样本格式:顶部汇总 + 明细) ---------- */
 $("downloadBtn").onclick = async ()=>{
   if(!resultData){ toast("没有结果"); return; }
@@ -627,8 +663,7 @@ $("downloadBtn").onclick = async ()=>{
     // 顶部4行汇总(加粗)
     [["应用场景：",summary["应用场景"]],["产品优势：",summary["产品优势"]],
      ["问题反馈：",summary["问题反馈"]],["相关软件：",summary["相关软件"]]].forEach(([k,v])=>{
-      const row = ws.addRow([k+v]);
-      row.getCell(1).font = {bold:true};
+      const row = ws.addRow([summaryRich(k, v)]);     // 富文本:字段名加粗 + 前3次数标红
       row.getCell(1).alignment = {wrapText:true, vertical:"top"};
     });
     // 明细表头(底色 + 加粗 + 居中)
