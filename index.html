@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>亚马逊评论分析工具</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<style>
+  :root{
+    --ink:#1a2332; --ink-soft:#5a6577; --line:#e3e7ee; --bg:#f6f8fb;
+    --panel:#ffffff; --accent:#1f6feb; --accent-soft:#e8f0fe;
+    --ok:#0f9d58; --warn:#d98b00; --err:#d83b3b; --radius:12px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg); color:var(--ink); line-height:1.6; padding:32px 20px;
+  }
+  .wrap{max-width:920px;margin:0 auto}
+  header{margin-bottom:28px}
+  h1{font-size:24px;font-weight:700;letter-spacing:-.3px}
+  .sub{color:var(--ink-soft);font-size:14px;margin-top:6px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;margin-bottom:18px}
+  .panel-title{font-size:13px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .step-num{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;align-items:center;justify-content:center;font-weight:700}
+  label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
+  input[type=text],input[type=password]{
+    width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:8px;font-size:14px;font-family:inherit;
+  }
+  input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .key-row{display:flex;gap:10px;align-items:flex-end}
+  .key-row > div{flex:1}
+  .hint{font-size:12px;color:var(--ink-soft);margin-top:7px}
+  .hint a{color:var(--accent)}
+  .key-saved{font-size:12px;color:var(--ok);margin-top:7px;display:none}
+  button{
+    font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;border:none;border-radius:8px;
+    padding:11px 18px;transition:.15s;
+  }
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:#1858c4}
+  .btn-primary:disabled{background:#aebbd0;cursor:not-allowed}
+  .btn-ghost{background:#eef1f6;color:var(--ink)}
+  .btn-ghost:hover{background:#e2e7ef}
+  .drop{
+    border:2px dashed var(--line);border-radius:var(--radius);padding:42px 20px;text-align:center;
+    cursor:pointer;transition:.15s;background:#fafbfd;
+  }
+  .drop:hover,.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+  .drop .ico{font-size:34px;opacity:.4}
+  .drop .big{font-size:15px;font-weight:600;margin-top:10px}
+  .drop .small{font-size:13px;color:var(--ink-soft);margin-top:4px}
+  .file-chip{display:inline-flex;align-items:center;gap:8px;background:var(--accent-soft);color:var(--accent);padding:6px 12px;border-radius:20px;font-size:13px;font-weight:600;margin-top:12px}
+  .progress-box{display:none}
+  .pbar-track{height:8px;background:#eef1f6;border-radius:5px;overflow:hidden;margin:10px 0 6px}
+  .pbar-fill{height:100%;background:var(--accent);width:0%;transition:width .3s;border-radius:5px}
+  .pstat{font-size:13px;color:var(--ink-soft)}
+  .log{font-family:"SF Mono",Consolas,monospace;font-size:12px;background:#0f1729;color:#c8d4e8;border-radius:8px;padding:14px;margin-top:14px;max-height:200px;overflow-y:auto;display:none}
+  .log div{padding:1px 0}
+  .log .t-ok{color:#5fd99a}.log .t-warn{color:#f0c060}.log .t-err{color:#f08a8a}.log .t-ai{color:#7fb4ff}
+  .result-box{display:none}
+  .result-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:12px}
+  .tab{padding:7px 13px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;background:#eef1f6;color:var(--ink-soft)}
+  .tab.active{background:var(--accent);color:#fff}
+  .summary-block{background:#fafbfd;border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:14px;font-size:13px}
+  .summary-block .srow{margin-bottom:7px}
+  .summary-block .srow:last-child{margin-bottom:0}
+  .summary-block b{color:var(--accent)}
+  .tbl-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th{background:#f0f3f8;text-align:left;padding:9px 11px;font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap;position:sticky;top:0}
+  td{padding:9px 11px;border-bottom:1px solid #eef1f6;vertical-align:top}
+  td.review{max-width:380px;min-width:280px}
+  tr:hover td{background:#fafbfd}
+  .col-tag{color:var(--accent);font-weight:500}
+  .actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:11px 20px;border-radius:8px;font-size:13px;opacity:0;transition:.3s;pointer-events:none;z-index:99}
+  .toast.show{opacity:1}
+  .warn-banner{background:#fff8ec;border:1px solid #f0d9a8;color:#8a6500;font-size:12.5px;padding:11px 14px;border-radius:8px;margin-top:12px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>亚马逊评论分析工具</h1>
+    <div class="sub">上传爬虫导出的原始数据 → 自动清洗、翻译、二筛分析 → 导出汇总分析表</div>
+  </header>
+
+  <!-- 第一步:API Key -->
+  <div class="panel">
+    <div class="panel-title"><span class="step-num">1</span>填写智谱 API Key（只存本地浏览器，不上传）</div>
+    <div class="key-row">
+      <div>
+        <input type="password" id="apiKey" placeholder="粘贴你的智谱 GLM API Key">
+      </div>
+      <button class="btn-ghost" id="saveKey">保存</button>
+    </div>
+    <div class="hint">没有 Key？去 <a href="https://www.bigmodel.cn/usercenter/proj-mgmt/apikeys" target="_blank">智谱开放平台</a> 免费申请（中国大陆手机号可注册）。Key 仅保存在你本机浏览器，不会发送到任何第三方。</div>
+    <div class="key-saved" id="keySaved">✓ Key 已保存到本地</div>
+  </div>
+
+  <!-- 第二步:上传文件 -->
+  <div class="panel">
+    <div class="panel-title"><span class="step-num">2</span>上传原始数据文件</div>
+    <div class="drop" id="drop">
+      <div class="ico">📄</div>
+      <div class="big">把 原始数据.xlsx 拖到这里，或点击选择</div>
+      <div class="small">支持多型号（多个工作表），每个工作表是一个产品型号</div>
+      <input type="file" id="fileInput" accept=".xlsx,.xls" style="display:none">
+    </div>
+    <div id="fileInfo"></div>
+    <div class="actions">
+      <button class="btn-primary" id="startBtn" disabled>开始处理</button>
+    </div>
+  </div>
+
+  <!-- 进度 -->
+  <div class="panel progress-box" id="progressBox">
+    <div class="panel-title">处理进度</div>
+    <div class="pstat" id="pstat">准备中…</div>
+    <div class="pbar-track"><div class="pbar-fill" id="pbar"></div></div>
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);margin-top:2px">
+      <span id="ppct">0%</span>
+      <span id="peta"></span>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <!-- 结果 -->
+  <div class="panel result-box" id="resultBox">
+    <div class="panel-title">处理完成</div>
+    <div id="resultDone" style="font-size:14px;color:var(--ink);margin-bottom:4px"></div>
+    <div class="actions">
+      <button class="btn-primary" id="downloadBtn">下载分析 Excel</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+const MODEL = "glm-4.5-air"; // 强模型(你账户有1200万免费token);下面会自动关闭"深度思考"→约1.2秒/条。想省额度可改回 glm-4-flash(更弱,归并会不稳)
+const $ = id => document.getElementById(id);
+let rawWorkbook = null, resultData = null;
+
+/* ---------- 并发与重试(提速:多条评论同时分析,智谱限速由重试兜底) ---------- */
+const CONCURRENCY = 8;            // 同时分析几条评论;太大易触发限速,8 较稳,可按需调
+const SUMMARY_TOP_N = 12;         // 汇总每个字段最多显示几个标签(按次数降序);明细仍保留全部,改这个数即可
+const sleep = ms => new Promise(r=> setTimeout(r, ms));
+const backoff = n => Math.min(8000, 600*Math.pow(2, n-1)) + Math.floor(Math.random()*300);
+/* 并发池:最多 limit 个同时跑;worker 抛出带 __abort 标记的错误则整体中止 */
+async function mapPool(items, limit, worker){
+  const results = new Array(items.length);
+  let next = 0, aborted = null;
+  async function runner(){
+    while(!aborted){
+      const i = next++;
+      if(i >= items.length) return;
+      try{ results[i] = await worker(items[i], i); }
+      catch(e){ if(e && e.__abort) aborted = e; return; }
+    }
+  }
+  await Promise.all(Array.from({length: Math.min(limit, items.length)}, runner));
+  if(aborted) throw aborted;
+  return results;
+}
+
+/* ---------- API Key 本地存储 ---------- */
+(function initKey(){
+  const k = localStorage.getItem("zhipu_key");
+  if(k){ $("apiKey").value = k; $("keySaved").style.display="block"; }
+})();
+$("saveKey").onclick = ()=>{
+  const k = $("apiKey").value.trim();
+  if(!k){ toast("请先填写 Key"); return; }
+  localStorage.setItem("zhipu_key", k);
+  $("keySaved").style.display="block";
+  toast("Key 已保存");
+};
+
+/* ---------- 文件上传 ---------- */
+const drop = $("drop"), fileInput = $("fileInput");
+drop.onclick = ()=> fileInput.click();
+drop.ondragover = e=>{ e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = ()=> drop.classList.remove("over");
+drop.ondrop = e=>{ e.preventDefault(); drop.classList.remove("over"); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); };
+fileInput.onchange = e=>{ if(e.target.files[0]) handleFile(e.target.files[0]); };
+
+function handleFile(file){
+  const reader = new FileReader();
+  reader.onload = e=>{
+    try{
+      rawWorkbook = XLSX.read(e.target.result, {type:"array"});
+      const sheets = rawWorkbook.SheetNames;
+      $("fileInfo").innerHTML = `<div class="file-chip">✓ ${file.name} · ${sheets.length} 个型号：${sheets.join("、")}</div>`;
+      $("startBtn").disabled = false;
+    }catch(err){
+      toast("文件读取失败，请确认是 Excel 文件");
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ---------- 清洗逻辑(本地,纯规则) ---------- */
+function cleanSheet(ws){
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  if(rows.length < 2) return [];
+  const headers = rows[0].map(h=> String(h==null?"":h).toLowerCase());
+  // 识别"评论内容"列:a-size-base 开头且不含 href
+  const contentCols = [];
+  headers.forEach((h,i)=>{
+    if(h.indexOf("href")>=0 || h.indexOf("src")>=0) return;
+    if(h.indexOf("helpful")>=0) return;
+    if(h.indexOf("profile-name")>=0) return;
+    if(h.indexOf("icon-alt")>=0) return;
+    if(h.indexOf("a-size-base")===0) contentCols.push(i);
+  });
+  const NOISE_EXACT = new Set(["报告","有帮助","helpful","report","报告滥用"]);
+  const isNoise = s=>{
+    const t=s.trim();
+    if(NOISE_EXACT.has(t.toLowerCase())) return true;
+    if(/在美国审阅/.test(t) && t.length<30) return true;
+    if(/^\d+\s*人觉得此评论有用$/.test(t)) return true;
+    if(/^reviewed in the united states/i.test(t)) return true;
+    if(/^\d+(\.\d)?\s*(分（满分 5 分）|out of 5 stars)$/.test(t)) return true;
+    return false;
+  };
+  // 商品规格串:纯参数堆砌段落(多个参数命中且无主观评价句)
+  const isSpecSegment = seg=>{
+    const t=seg.trim();
+    if(!t || t.length>140) return false;
+    const specHits = (t.match(/\d+\s?GB\b|\d+\s?TB\b|固态硬盘|处理器|赛扬|英特尔|酷睿|Windows\s?11\s?专业版|N\d{3,4}|i[3579]-\d|Ryzen\s?\d/gi)||[]).length;
+    const hasOpinion = /喜欢|满意|推荐|很棒|不错|失望|问题|完美|划算|值得|快|慢|安静|吵|好用|难用|强大|惊人|优惠/.test(t);
+    return specHits>=3 && !hasOpinion;
+  };
+  const cleanCell = s=>{
+    s = s.replace(/\s*\d{4}年\d{1,2}月\d{1,2}日在美国审阅\s*/g," ");
+    s = s.replace(/(^|\s)报告($|\s)/g," ");
+    return s.replace(/\s+/g," ").trim();
+  };
+  const reviews = [];
+  for(let r=1;r<rows.length;r++){
+    const parts=[];
+    contentCols.forEach(c=>{
+      const v=rows[r][c];
+      if(v!=null){
+        const s=String(v).trim();
+        // 逐段:跳过噪音段和纯规格堆砌段
+        if(s && s.toLowerCase()!=="nan" && !isNoise(s) && !isSpecSegment(s)) parts.push(s);
+      }
+    });
+    if(parts.length){
+      let merged = cleanCell(parts.join(" "));
+      if(merged) reviews.push(merged);
+    }
+  }
+  return reviews;
+}
+
+/* ---------- 调用智谱 API ---------- */
+async function callAI(key, prompt, _attempt){
+  _attempt = _attempt || 1;
+  const ctrl = new AbortController();
+  const timer = setTimeout(()=> ctrl.abort(), 60000);   // 60秒超时:防止某次请求卡住不返回,把整个流程卡死
+  let resp;
+  try{
+    resp = await fetch(API_URL,{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":"Bearer "+key},
+      body:JSON.stringify(Object.assign({
+        model:MODEL,
+        messages:[{role:"user",content:prompt}],
+        temperature:0.1,
+        max_tokens:4096
+      }, /glm-4\.[56]/.test(MODEL) ? {thinking:{type:"disabled"}} : {})),  // glm-4.5/4.6 关闭深度思考,否则又慢又费 token
+      signal: ctrl.signal
+    });
+  }catch(netErr){
+    clearTimeout(timer);
+    const isTimeout = netErr && netErr.name==="AbortError";
+    const maxTry = isTimeout ? 2 : 4;   // 超时最多试2次(避免越等越久),普通网络波动最多试4次
+    if(_attempt < maxTry){ await sleep(backoff(_attempt)); return callAI(key, prompt, _attempt+1); }
+    throw new Error(isTimeout ? "请求超时(60秒)" : (netErr.message||"网络错误"));
+  }
+  clearTimeout(timer);
+  if(!resp.ok){
+    const txt = await resp.text();
+    // 429 限速 / 5xx 服务端错误:退避重试;其它(401/403 鉴权等)直接抛出
+    if((resp.status===429 || resp.status>=500) && _attempt <= 4){
+      await sleep(backoff(_attempt)); return callAI(key, prompt, _attempt+1);
+    }
+    throw new Error("API "+resp.status+": "+txt.slice(0,200));
+  }
+  const data = await resp.json();
+  return data.choices[0].message.content;
+}
+
+/* 本地判断:这条评论是否需要翻译(英文→需要)。中文字远少于英文字母即判为英文,纯本地、瞬时、不耗 API */
+function needsTranslate(s){
+  s = String(s||"");
+  const cjk = (s.match(/[一-鿿]/g)||[]).length;
+  const latin = (s.match(/[A-Za-z]/g)||[]).length;
+  return latin >= 4 && cjk < latin * 0.2;
+}
+
+/* 英文评论:单独一次"纯翻译"调用(翻译是 flash 最擅长的,分开做最稳)。鉴权错抛 __abort,其它失败退回原文 */
+async function translateReview(key, review){
+  try{
+    const out = await callAI(key, `把下面这条英文用户评论整条翻成简体中文。产品名、型号、软件名、游戏名、系统名、接口名（如 KAMRUI、Ryzen 4300U、HDMI、Windows 11、Plex 等）保留原文。只输出翻译后的中文正文，不要引号、不要解释、不要 markdown。\n\n评论：\n${review}`);
+    const t = String(out||"").replace(/^```[a-z]*\n?/i,"").replace(/```$/,"").trim();
+    return t || review;
+  }catch(e){
+    if(/401|403|api key|invalid/i.test(e.message)){ const er=new Error(e.message); er.__abort=true; er.__auth=true; throw er; }
+    return review;   // 翻译失败:退回原文,不丢评论
+  }
+}
+
+/* ---------- 二筛:从(已是中文的)评论里如实提取四个字段 ---------- */
+function buildPrompt(review){
+  return `你是亚马逊迷你电脑评论分析助手。请只依据下面这条评论的真实内容，提取四个字段。
+
+【最高铁律：绝不编造】
+只提取原文真实提到的；没提到就留空 ""。严禁推测、脑补、套模板、凑标准词。
+
+【标签要求】
+- 一律简体中文；产品名/型号/软件名/游戏名/系统名/接口名保留原文（如 KAMRUI、Ryzen 4300U、HDMI、Windows 11、Plex 等）。
+- 每个标签要短（2~8 字，像 安静、运行速度快、性价比高、体积小巧、控制激光雕刻机），不要整句；多个标签用中文顿号"、"分隔。
+
+【四个字段】
+- 应用场景：用它做什么（只写真说了的；"日常任务/其他事情"这种泛词不写）
+- 产品优势：夸的优点
+- 问题反馈：缺点 / 问题
+- 相关软件：只要软件名和游戏名（硬件/接口/配件不算软件，如 HDMI、固态硬盘、显卡、KVM 不要写）；中文游戏名加《》
+
+只输出一个 JSON 对象，不要任何额外文字、不要 markdown：
+{"应用场景":"","产品优势":"","问题反馈":"","相关软件":""}
+
+评论：
+${review}`;
+}
+
+function parseAIJson(text){
+  let t = text.trim().replace(/^```json/i,"").replace(/^```/,"").replace(/```$/,"").trim();
+  const m = t.match(/\{[\s\S]*\}/);
+  if(m) t = m[0];
+  try{ return JSON.parse(t); }
+  catch(e){
+    // 兜底:整体 JSON 解析失败时,逐字段用正则抢救,避免整条退回英文原文+空标签
+    const grab = k => {
+      const r = t.match(new RegExp('"'+k+'"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"'));
+      return r ? r[1].replace(/\\"/g,'"').replace(/\\n/g," ").trim() : "";
+    };
+    return {"应用场景":grab("应用场景"),"产品优势":grab("产品优势"),"问题反馈":grab("问题反馈"),"相关软件":grab("相关软件")};
+  }
+}
+
+/* 清理单个字段:逗号统一成顿号,去掉空标签、空《》、去重 */
+function cleanField(v){
+  if(!v) return "";
+  const seen = new Set();
+  return String(v).split(/、|，|,|;|；/)
+    .map(x=>x.trim())
+    .filter(x=> x && x!=="《》" && x!=="无" && x!=="无。" && x.toLowerCase()!=="nan" && x!=="N/A")
+    .filter(x=>{ if(seen.has(x)) return false; seen.add(x); return true; })
+    .join("、");
+}
+
+/* ---------- 汇总统计(按次数降序,>=2标次数) ---------- */
+function summarize(details, field){
+  const cnt = {};
+  details.forEach(d=>{
+    const v = (d[field]||"").trim();
+    if(!v) return;
+    v.split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && x!=="《》").forEach(tag=>{
+      cnt[tag] = (cnt[tag]||0)+1;
+    });
+  });
+  const sorted = Object.entries(cnt).sort((a,b)=> b[1]-a[1]).slice(0, SUMMARY_TOP_N);  // 只取最高频前 N 个
+  return sorted.map(([tag,n])=> n>=2 ? `${tag}（${n}次）` : tag).join("、");
+}
+
+/* ====== 第二遍:AI 现场归并汇总(零预设——不写死任何同义词表/黑名单) ======
+   做法:把这型号所有评论里【如实提取】出来的标签丢给 AI,让它结合这批真实内容,
+   判断哪些是同义→归并、哪些是硬件→剔除;AI 只能用真实出现过的词,不得新增。
+   AI 只负责"分组",代码负责确定性地套用分组、数次数、排序。           */
+
+/* 收集某型号某字段出现过的全部不同标签(去重) */
+function distinctTags(details, field){
+  const set = new Set();
+  details.forEach(d=>{
+    String(d[field]||"").split(/、|，|,|;|；/).map(x=>x.trim())
+      .filter(x=> x && x!=="《》").forEach(t=> set.add(t));
+  });
+  return [...set];
+}
+
+/* 解析"纯文本行"归并结果 → {map:成员->标准, drop:剔除集合}。容错:坏行跳过,没分到组的标签后续原样保留 */
+function parseFieldGroups(text, isSoftware){
+  const map = new Map(), drop = new Set();
+  let mode = "group";
+  String(text||"").split(/\r?\n/).forEach(raw=>{
+    let line = raw.trim().replace(/^[-*•]\s*/,"");
+    if(!line) return;
+    const sec = (line.match(/^[\[【](.+?)[\]】]\s*$/) || line.match(/^#+\s*(.+?)\s*$/));
+    if(sec){ mode = /剔除|硬件|删除|删掉|剔掉/.test(sec[1]) ? "drop" : "group"; return; }
+    if(isSoftware && mode==="drop"){
+      // 只按顿号/逗号分隔(不按空格,否则"双4K HDMI接口"这种带空格的硬件名会被拆碎、漏剔)
+      line.split(/、|，|,|;|；/).map(x=> x.trim().replace(/^["'`【\[]+/,"").replace(/["'`】\]。]+$/,"")).filter(Boolean).forEach(h=> drop.add(h));
+      return;
+    }
+    const parts = line.split(/<=|<-|⇐|←|=>|→|::|=/);
+    if(parts.length>=2){
+      const std = parts[0].replace(/[【】\[\]"'`]/g,"").trim();
+      parts.slice(1).join(" ").split(/、|，|,|;|；/).map(x=>x.trim()).filter(Boolean).forEach(mem=>{ if(std) map.set(mem, std); });
+    }
+  });
+  return {map, drop};
+}
+
+/* 对一个字段做归并:纯文本行格式(不是嵌套 JSON),flash 最稳。空输入直接返回空映射(不浪费调用) */
+async function aggregateField(key, fieldName, tags){
+  if(!tags.length) return {map:new Map(), drop:new Set()};
+  const isSoftware = fieldName==="相关软件";
+  const prompt = isSoftware
+    ? `下面是从某迷你电脑评论里如实提取的"相关软件"候选（已去重）。请做两件事：
+①找出【同一软件/游戏的不同写法】并归并到一个标准名（只有一种写法、没有重复的就不用管）；②把其中的硬件/接口/配件（如 HDMI、固态硬盘、SSD、硬盘、内存、显卡、摄像头、打印机、KVM、显示器、电源、风扇、扩展坞、网线、读卡器 等）挑出来剔除。
+只能用下面真实出现的词，绝不新增。
+
+输出【纯文本】，分两段，不要 JSON、不要解释、不要多余说明：
+[保留]
+（只列【需要合并】的软件，格式"标准名 <= 写法1、写法2"；没有重复写法的软件【不用列出来】）
+[剔除]
+（一行，把所有硬件/接口/配件用顿号隔开；没有就留空）
+
+候选：
+${tags.join("、")}`
+    : `下面是从某迷你电脑评论里如实提取的"${fieldName}"标签（已去重）。请只找出【意思相同或高度近似、需要合并】的同义词组，每组归并成一个简短标准词（2~8 字，像 安静、运行速度快、性价比高、散热好）。
+
+【非常重要】只输出【需要合并的组】（即有 2 个及以上不同写法的）。**只出现一次、没有同义词的标签不要列出来**（系统会自动原样保留它们），具体特异的（如 控制激光雕刻机、说明书字体太小）也不用列。这样输出会很短。
+只能用下面真实出现的词，绝不新增。
+
+输出【纯文本】，每行一组，格式"标准词 <= 同义词1、同义词2"。如果没有任何需要合并的组，就只输出一个字"无"。不要 JSON、不要解释。
+
+标签：
+${tags.join("、")}`;
+  const out = await callAI(key, prompt);
+  return parseFieldGroups(out, isSoftware);
+}
+
+/* 用某字段的分组,把一条标签串:剔硬件 → 套标准说法 → 去重(没分到组的原样保留,绝不丢内容) */
+function applyAgg(value, m){
+  if(!value || !m) return value||"";
+  const seen = new Set();
+  return String(value).split(/、|，|,|;|；/).map(x=>x.trim())
+    .filter(x=> x && x!=="《》")
+    .filter(x=> !m.drop.has(x))
+    .map(x=> m.map.get(x) || x)
+    .filter(x=>{ if(seen.has(x)) return false; seen.add(x); return true; })
+    .join("、");
+}
+
+/* 第二遍主入口:四个字段【各自一次】纯文本归并(并行),flash 稳吐。某字段失败只影响该字段,不整体崩 */
+async function aggregateModel(key, details, onField){
+  const fields = ["应用场景","产品优势","问题反馈","相关软件"];
+  const results = await Promise.all(fields.map(async f=>{
+    const tags = distinctTags(details, f);
+    try{
+      const r = await aggregateField(key, f, tags);
+      if(tags.length) logLine(`  归并完成:${f}（${tags.length} 个不同标签）`, "ok");
+      if(onField) onField(f);
+      return r;
+    }catch(err){
+      if(err && err.__auth) throw err;
+      logLine(`  归并:字段[${f}]失败（${err.message}），该字段保持不归并`, "warn");
+      if(onField) onField(f);
+      return {map:new Map(), drop:new Set()};
+    }
+  }));
+  const maps = {};
+  fields.forEach((f,i)=> maps[f]=results[i]);
+  return maps;
+}
+
+/* ---------- 主流程 ---------- */
+$("startBtn").onclick = async ()=>{
+  const key = $("apiKey").value.trim();
+  if(!key){ toast("请先填写并保存 API Key"); return; }
+  if(!rawWorkbook){ toast("请先上传文件"); return; }
+
+  $("progressBox").style.display="block";
+  $("log").style.display="block";
+  $("resultBox").style.display="none";
+  $("startBtn").disabled=true;
+  $("log").innerHTML="";
+  resultData = {};
+
+  const sheetNames = rawWorkbook.SheetNames;
+  // 先清洗所有型号,统计总评论数
+  const cleanedAll = {};
+  let totalReviews = 0;
+  sheetNames.forEach(sn=>{
+    const reviews = cleanSheet(rawWorkbook.Sheets[sn]);
+    cleanedAll[sn] = reviews;
+    totalReviews += reviews.length;
+    logLine(`型号 [${sn}] 清洗出 ${reviews.length} 条评论`, "ok");
+  });
+
+  let done = 0, reviewsDone = 0;
+  const AGG_W = 10;                                         // 归并每个字段在进度条里折算成多少"条"(让进度条在归并时也往前走,不再停在50%像死机)
+  const totalUnits = totalReviews + sheetNames.length*4*AGG_W;
+  const startTime = Date.now();
+  for(const sn of sheetNames){
+    const reviews = cleanedAll[sn];
+    logLine(`开始分析型号：${sn}（逐条并发 ${CONCURRENCY}）`, "ai");
+    let details;
+    try{
+      // 逐条并发:英文先单独翻译成中文,再从中文里提取标签(都让 flash 干简单的活,最稳);鉴权错→整体中止
+      details = await mapPool(reviews, CONCURRENCY, async (review, i)=>{
+        let text = review;
+        if(needsTranslate(review)) text = await translateReview(key, review);
+        let parsed = {};
+        try{
+          const out = await callAI(key, buildPrompt(text));
+          parsed = parseAIJson(out);
+        }catch(err){
+          if(/401|403|api key|invalid/i.test(err.message)){ const e=new Error(err.message); e.__abort=true; e.__auth=true; throw e; }
+          logLine(`型号 ${sn} 第 ${i+1} 条出错：${err.message}`, "err");
+        }
+        done++; reviewsDone++;
+        setProgress(done, totalUnits, `提取评论中：${sn}（${reviewsDone}/${totalReviews} 条）`, startTime);
+        return {
+          "评论内容": text,
+          "应用场景": cleanField(parsed["应用场景"]||""),
+          "产品优势": cleanField(parsed["产品优势"]||""),
+          "问题反馈": cleanField(parsed["问题反馈"]||""),
+          "相关软件": cleanField(parsed["相关软件"]||"")
+        };
+      });
+    }catch(err){
+      if(err && err.__auth){
+        logLine("API Key 无效或鉴权失败，已停止。请检查 Key。", "err");
+        $("pbar").style.width="0%"; $("ppct").textContent="0%"; $("pstat").textContent="已停止"; $("peta").textContent="";
+        $("startBtn").disabled=false;
+        toast("API Key 有问题，请检查");
+        return;
+      }
+      throw err;
+    }
+    details = details.filter(Boolean);  // 兜底:剔除极端情况下的空洞,绝不让后续崩
+    // 第二遍:AI 现场归并(零预设)。把同义标签合并、把硬件从软件列剔除;
+    // 明细也按同一分组统一,保证明细与汇总一致。失败则退回未归并汇总,保证不崩。
+    let useDetails = details;
+    try{
+      setProgress(done, totalUnits, `AI 归并中：${sn}`, startTime);
+      logLine(`型号 [${sn}] 调用 AI 归并汇总（4 字段并行，每个最多 60 秒）…`, "ai");
+      const maps = await aggregateModel(key, details, ()=>{ done += AGG_W; setProgress(done, totalUnits, `AI 归并中：${sn}`, startTime); });
+      useDetails = details.map(d=>({
+        "评论内容": d["评论内容"],
+        "应用场景": applyAgg(d["应用场景"], maps["应用场景"]),
+        "产品优势": applyAgg(d["产品优势"], maps["产品优势"]),
+        "问题反馈": applyAgg(d["问题反馈"], maps["问题反馈"]),
+        "相关软件": applyAgg(d["相关软件"], maps["相关软件"])
+      }));
+      logLine(`型号 [${sn}] 归并完成`, "ok");
+    }catch(err){
+      logLine(`型号 [${sn}] AI 归并失败（${err.message}），退回未归并汇总`, "warn");
+      useDetails = details;
+    }
+    // 汇总(基于归并后的明细统计,次数准、与明细一致)
+    const summary = {
+      "应用场景": summarize(useDetails,"应用场景"),
+      "产品优势": summarize(useDetails,"产品优势"),
+      "问题反馈": summarize(useDetails,"问题反馈"),
+      "相关软件": summarize(useDetails,"相关软件")
+    };
+    resultData[sn] = {details: useDetails, summary};
+    logLine(`型号 [${sn}] 分析完成`, "ok");
+  }
+
+  setProgress(totalUnits, totalUnits, "全部完成！", startTime);
+  $("peta").textContent = "";
+  logLine("✓ 全部处理完成，可下载结果", "ok");
+  const totalSecs = Math.round((Date.now()-startTime)/1000);
+  const names = Object.keys(resultData);
+  const lines = names.map(n=> `${n}：${resultData[n].details.length} 条`).join("，");
+  $("resultDone").innerHTML = `共分析 ${names.length} 个型号（${lines}），耗时 ${fmtTime(totalSecs)}。点下方按钮下载分析表。`;
+  $("resultBox").style.display="block";
+  $("startBtn").disabled=false;
+};
+
+/* ---------- 进度与日志 ---------- */
+function setProgress(done, total, txt, startTime){
+  const pct = total ? done/total*100 : 0;
+  $("pbar").style.width = pct.toFixed(1)+"%";
+  $("ppct").textContent = pct.toFixed(0)+"%";
+  $("pstat").textContent = txt;
+  // 预估剩余时间:用已完成的平均耗时推算
+  if(startTime && done>0 && done<total){
+    const elapsed = (Date.now()-startTime)/1000;
+    const remain = Math.round(elapsed/done*(total-done));
+    $("peta").textContent = "预计剩余 "+fmtTime(remain);
+  }
+}
+function fmtTime(s){
+  if(s<60) return s+" 秒";
+  const m=Math.floor(s/60), sec=s%60;
+  return sec? `${m} 分 ${sec} 秒` : `${m} 分`;
+}
+function logLine(msg, type){
+  const d=document.createElement("div");
+  if(type) d.className="t-"+type;
+  d.textContent = "› "+msg;
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+
+/* ---------- 导出 Excel(按规范样本格式:顶部汇总 + 明细) ---------- */
+$("downloadBtn").onclick = async ()=>{
+  if(!resultData){ toast("没有结果"); return; }
+  const wb = new ExcelJS.Workbook();
+  Object.keys(resultData).forEach(name=>{
+    const {details, summary} = resultData[name];
+    const ws = wb.addWorksheet(name.slice(0,31));
+    ws.columns = [{width:60},{width:18},{width:20},{width:18},{width:18}];
+    // 顶部4行汇总(加粗)
+    [["应用场景：",summary["应用场景"]],["产品优势：",summary["产品优势"]],
+     ["问题反馈：",summary["问题反馈"]],["相关软件：",summary["相关软件"]]].forEach(([k,v])=>{
+      const row = ws.addRow([k+v]);
+      row.getCell(1).font = {bold:true};
+      row.getCell(1).alignment = {wrapText:true, vertical:"top"};
+    });
+    // 明细表头(底色 + 加粗 + 居中)
+    const head = ws.addRow(["评论内容","应用场景","产品优势","问题反馈","相关软件"]);
+    head.eachCell(cell=>{
+      cell.font = {bold:true};
+      cell.fill = {type:"pattern", pattern:"solid", fgColor:{argb:"FFDCE6F1"}}; // 浅蓝底
+      cell.alignment = {horizontal:"center", vertical:"center"};
+      cell.border = {
+        top:{style:"thin",color:{argb:"FF4472C4"}}, bottom:{style:"thin",color:{argb:"FF4472C4"}},
+        left:{style:"thin",color:{argb:"FF4472C4"}}, right:{style:"thin",color:{argb:"FF4472C4"}}
+      };
+    });
+    // 明细数据
+    details.forEach(d=>{
+      const row = ws.addRow([d["评论内容"],d["应用场景"],d["产品优势"],d["问题反馈"],d["相关软件"]]);
+      row.getCell(1).alignment = {wrapText:true, vertical:"top"};
+    });
+  });
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "亚马逊评论分析结果.xlsx";
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("已下载");
+};
+
+/* ---------- toast ---------- */
+let toastTimer;
+function toast(msg){
+  const t=$("toast"); t.textContent=msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove("show"),2200);
+}
+</script>
+</body>
+</html>
