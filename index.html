@@ -145,7 +145,7 @@ const $ = id => document.getElementById(id);
 let rawWorkbook = null, resultData = null;
 
 /* ---------- 并发与重试(提速:多条评论同时分析,智谱限速由重试兜底) ---------- */
-const CONCURRENCY = 8;            // 同时分析几条评论;太大易触发限速,8 较稳,可按需调
+const CONCURRENCY = 4;            // 同时分析几条评论;glm-4.5-air 免费额度限速较严,4 较稳(太大易 429),付费可调大
 const SUMMARY_TOP_N = 12;         // 汇总每个字段最多显示几个标签(按次数降序);明细仍保留全部,改这个数即可
 const sleep = ms => new Promise(r=> setTimeout(r, ms));
 const backoff = n => Math.min(8000, 600*Math.pow(2, n-1)) + Math.floor(Math.random()*300);
@@ -286,9 +286,11 @@ async function callAI(key, prompt, _attempt){
   clearTimeout(timer);
   if(!resp.ok){
     const txt = await resp.text();
-    // 429 限速 / 5xx 服务端错误:退避重试;其它(401/403 鉴权等)直接抛出
-    if((resp.status===429 || resp.status>=500) && _attempt <= 4){
-      await sleep(backoff(_attempt)); return callAI(key, prompt, _attempt+1);
+    const is429 = resp.status===429 || /1302|速率限制|rate.?limit|频率/i.test(txt);   // 限速(含智谱 1302)
+    // 限速:等更久、试更多次(1.5→3→6→12→20秒),把频率压下来,确保被限速的评论最终补回来不丢;5xx 普通退避
+    if((is429 || resp.status>=500) && _attempt < (is429 ? 8 : 4)){
+      const wait = is429 ? Math.min(20000, 1500*Math.pow(2,_attempt-1)) + Math.floor(Math.random()*600) : backoff(_attempt);
+      await sleep(wait); return callAI(key, prompt, _attempt+1);
     }
     throw new Error("API "+resp.status+": "+txt.slice(0,200));
   }
