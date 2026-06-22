@@ -83,7 +83,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V2.5</span></h1>
+    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V2.8</span></h1>
     <div class="sub">重新提取四字段 → 「总结」表(可勾选):应用场景总结(逐场景挖具体需求)+饼图数据·产品优势/问题反馈两层汇总·软件统计(带描述)</div>
   </header>
 
@@ -251,65 +251,56 @@ function cleanSheet(ws){
       if(v!=null){
         const s=String(v).trim();
         // 逐段:跳过噪音段和纯规格堆砌段
-        if(s && s.toLowerCase()!=="nan" && !isNoise(s) && !isSpecSegment(s)) parts.push(s);
+        if(s && s.toLowerCase()!=="nan" && !isNoise(s) && !isSpecSegment(s) && !isJunkReview(s)) parts.push(s);
       }
     });
     if(parts.length){
       let merged = cleanCell(parts.join(" "));
-      if(merged) reviews.push(merged);
+      if(merged && !isJunkReview(merged)) reviews.push(merged);
     }
   }
   return reviews;
 }
 
-/* V2.2:扫表头找「评论内容」列 → 直接返回该列的评论文本数组(任何表只要有这列就能直接清洗,不要求别的列)。找不到返回 null。 */
+/* V2.7:评论行清洗 + 垃圾过滤(readReviewColumn 与 cleanSheet 共用) */
+const REVIEW_PLACEHOLDER = /^(n\/?a|none|null|test|nan|无|暂无|\.+|-+|—+)$/i;
+function isJunkReview(s){
+  s = String(s==null?"":s).trim();
+  if(!s || s.length < 2) return true;
+  if(REVIEW_PLACEHOLDER.test(s)) return true;
+  if(/^将(这条|下面.{0,10})?评论翻译成(简体)?(中文|英文).?$|^把.{0,12}翻译成(中文|英文)|translate .*(to|into) /i.test(s)) return true;  // 翻译提示词泄漏进正文
+  return false;
+}
+function cleanReviewCell(v){
+  let s = String(v==null?"":v);
+  s = s.replace(/\s*\d{4}年\d{1,2}月\d{1,2}日在美国审阅\s*/g," ");
+  s = s.replace(/\s*\d+\s*人觉得此评论有用\s*/g," ");
+  s = s.replace(/(^|\s)报告($|\s)/g," ");
+  s = s.replace(/\s*\d+(\.\d)?\s*分（满分 5 分）\s*/g," ");
+  return s.replace(/\s+/g," ").trim();
+}
+/* V2.7:扫表头找「评论内容」列(表头归一化去空格+别名正则)→ 返回【清洗+去垃圾】后的评论数组。
+   没找到列返回 null(主循环退回爬虫清洗);找到列但全空返回 [](主循环据此报"该列为空")。 */
 function readReviewColumn(ws){
   const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  const norm = c=> String(c==null?"":c).replace(/\s+/g,"").toLowerCase();
+  const isReviewHeader = c=> /^(评论|评价)(内容|正文|文本|详情)?$|^用户(评论|评价)$|^正文$|^(review|comment)s?(content|text)?$/.test(norm(c));
   let hr = -1, col = -1;
   for(let r=0; r<Math.min(rows.length, 15); r++){
-    const cells = (rows[r]||[]).map(c=> String(c==null?"":c).trim());
-    const i = cells.findIndex(c=> c==="评论内容" || c==="评价内容" || c==="评论正文" || c==="评论");
+    const i = (rows[r]||[]).findIndex(isReviewHeader);
     if(i>=0){ hr=r; col=i; break; }
   }
-  if(hr<0) return null;
+  if(hr < 0) return null;
   const reviews = [];
   for(let r=hr+1; r<rows.length; r++){
-    const v = (rows[r]||[])[col]; const s = v==null ? "" : String(v).trim();
-    if(s) reviews.push(s);
+    const s = cleanReviewCell((rows[r]||[])[col]);
+    if(s && !isJunkReview(s)) reviews.push(s);
   }
-  return reviews.length ? reviews : null;
-}
-/* V1.2:读取"已分析好"的 sheet(有 应用场景/产品优势/问题反馈/相关软件 列)→ 直接返回明细;不是这种格式则返回 null,走原始数据流程 */
-function readAnalyzedSheet(ws){
-  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
-  let hr = -1, col = null;
-  for(let r=0; r<Math.min(rows.length, 15); r++){
-    const cells = (rows[r]||[]).map(c=> String(c==null?"":c).trim());
-    const iScene=cells.indexOf("应用场景"), iAdv=cells.indexOf("产品优势"), iProb=cells.indexOf("问题反馈"), iSw=cells.indexOf("相关软件");
-    if(iScene>=0 && (iAdv>=0 || iProb>=0 || iSw>=0)){
-      hr = r; col = {评论内容: cells.indexOf("评论内容"), 应用场景:iScene, 产品优势:iAdv, 问题反馈:iProb, 相关软件:iSw};
-      break;
-    }
-  }
-  if(hr < 0) return null;
-  const get = (row,i)=> (i>=0 && row[i]!=null) ? String(row[i]).trim() : "";
-  const details = [];
-  for(let r=hr+1; r<rows.length; r++){
-    const row = rows[r]||[];
-    const d = {
-      "评论内容": get(row, col.评论内容),
-      "应用场景": cleanField(get(row, col.应用场景)),
-      "产品优势": cleanField(get(row, col.产品优势)),
-      "问题反馈": cleanField(get(row, col.问题反馈)),
-      "相关软件": cleanField(get(row, col.相关软件))
-    };
-    if(d.评论内容 || d.应用场景 || d.产品优势 || d.问题反馈 || d.相关软件) details.push(d);
-  }
-  return details;
+  return reviews;
 }
 
 /* ---------- 调用智谱 API ---------- */
-async function callAI(key, prompt, timeoutMs, _attempt){
+async function callAI(key, prompt, timeoutMs, maxTokens, _attempt){
   _attempt = _attempt || 1;
   timeoutMs = timeoutMs || 60000;   // 默认60秒;跨全部型号的大归并调用(标签很多)可传更长,如 180000
   const ctrl = new AbortController();
@@ -323,7 +314,7 @@ async function callAI(key, prompt, timeoutMs, _attempt){
         model:MODEL,
         messages:[{role:"user",content:prompt}],
         temperature:0.1,
-        max_tokens:4096
+        max_tokens: maxTokens || 4096
       }, /glm-4\.[56]/.test(MODEL) ? {thinking:{type:"disabled"}} : {})),  // glm-4.5/4.6 关闭深度思考,否则又慢又费 token
       signal: ctrl.signal
     });
@@ -331,7 +322,7 @@ async function callAI(key, prompt, timeoutMs, _attempt){
     clearTimeout(timer);
     const isTimeout = netErr && netErr.name==="AbortError";
     const maxTry = isTimeout ? 2 : 4;   // 超时最多试2次(避免越等越久),普通网络波动最多试4次
-    if(_attempt < maxTry){ await sleep(backoff(_attempt)); return callAI(key, prompt, timeoutMs, _attempt+1); }
+    if(_attempt < maxTry){ await sleep(backoff(_attempt)); return callAI(key, prompt, timeoutMs, maxTokens, _attempt+1); }
     throw new Error(isTimeout ? `请求超时(${Math.round(timeoutMs/1000)}秒)` : (netErr.message||"网络错误"));
   }
   clearTimeout(timer);
@@ -341,7 +332,7 @@ async function callAI(key, prompt, timeoutMs, _attempt){
     // 限速:等更久、试更多次(1.5→3→6→12→20秒),把频率压下来,确保被限速的评论最终补回来不丢;5xx 普通退避
     if((is429 || resp.status>=500) && _attempt < (is429 ? 8 : 4)){
       const wait = is429 ? Math.min(20000, 1500*Math.pow(2,_attempt-1)) + Math.floor(Math.random()*600) : backoff(_attempt);
-      await sleep(wait); return callAI(key, prompt, timeoutMs, _attempt+1);
+      await sleep(wait); return callAI(key, prompt, timeoutMs, maxTokens, _attempt+1);
     }
     throw new Error("API "+resp.status+": "+txt.slice(0,200));
   }
@@ -369,24 +360,44 @@ async function translateReview(key, review){
   }
 }
 
+/* V2.7:确定性去编造校验——抽出的软件名必须在【英文原文 ∪ 中文译文】里(去空格、小写)真实出现,否则剔除。
+   对 Windows/Chromebook 这类"迷你电脑语境脑补默认装系统"的高发编造词从严:原文译文里没有 win/windows/微软 等字样就剔。
+   注意:只用原文+译文做底(译文里软件名按提示要求保留原文),不会误删翻译改写过的真实软件名;短名(<2字)宁可保留不误删。 */
+function verifySoftware(swField, review, text){
+  if(!swField) return swField;
+  const hay = (String(review)+" "+String(text)).toLowerCase().replace(/\s+/g,"");
+  if(!hay) return swField;
+  const names = swField.split(/[、,，;；]/).map(s=> s.trim()).filter(Boolean);
+  const kept = names.filter(name=>{
+    const n = name.toLowerCase().replace(/[\s《》]/g,"");
+    if(n.length < 2) return true;                              // 单字/极短名无法可靠校验,宁可保留(避免误删真名)
+    if(/^(windows|win|微软视窗|视窗)/.test(n))  return /windows|win7|win8|win10|win11|win\b|微软|视窗/.test(hay);  // 高发脑补词:从严
+    if(/chromebook|chromeos|chrome系统/.test(n)) return /chromebook|chromeos|chrome/.test(hay);
+    if(hay.includes(n)) return true;                           // 去空格小写后直接命中
+    const base = n.replace(/[\d.\s]+$/,"");                     // 去尾部版本号再试(Windows 11→windows、Plex 2→plex)
+    return base.length >= 2 && hay.includes(base);
+  });
+  return kept.join("、");
+}
+
 /* ---------- 二筛:从(已是中文的)评论里如实提取四个字段 ---------- */
 function buildPrompt(review){
   return `你是亚马逊迷你电脑评论分析助手。请只依据下面这条评论的真实内容，【完整】提取四个字段——原文提到的每一个都要抽出来，【尤其别漏软件】。
 
 【最高铁律：绝不编造】只提取原文真实提到的；没提到就留空 ""。严禁推测、脑补、套模板、凑标准词。
 
-【完整性·重点】原文里出现的所有 用途、优点、问题、软件 都要抽全，不要只抽一两个就算了；一条评论常有好几个标签，用中文顿号"、"分隔。
+【完整性·重点】原文里出现的所有 用途、优点、问题、软件 都要抽全，不要只抽一两个就算了。【每个字段是一个数组,一个数组元素只放一个标签;有几个标签就放几个元素,绝不要把多个标签塞进同一个元素、绝不用空格连接多个标签】(错误示例:["价格划算 性能好 体积小"];正确:["价格划算","性能好","体积小"])。
 
-【标签要求·要精简】一律简体中文；软件名/系统名/游戏名保留原文（如 Windows 11、Ubuntu、Plex）；【每个标签尽量短——概括成 2~6 字的核心词，能省就省，绝不照抄长句】，例如"指纹识别器无法使用"→"指纹失灵"、"亚马逊退款需30天"→"退款慢"、"高分辨率音频卡顿"→"音频卡顿"、"无法在Windows里设置PIN针"→"PIN设置失败"、"多余的硬盘槽显示不出来"→"硬盘槽不识别"。
+【标签要求·要精简】一律简体中文；软件名/系统名/游戏名保留原文（如 Windows 11、Ubuntu、Plex）；【每个标签尽量短——概括成 2~6 字的核心词，能省就省，绝不照抄长句；任何标签超过 8 个汉字一律压缩】，例如"指纹识别器无法使用"→"指纹失灵"、"亚马逊退款需30天"→"退款慢"、"与4TB Teamgroup固态硬盘不兼容"→"SSD不兼容"、"无线键盘鼠标接到背面USB口干扰严重"→"外设干扰"、"无法在Windows里设置PIN针"→"PIN设置失败"。
 
 【四个字段】
 - 应用场景：用户【拿这台迷你电脑来做什么】的用途。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、做媒体服务器、视频监控、跑虚拟机、编程；原文提到几个用途就抽几个。设备本身/一个动作/泛词（电脑、运行、性能、设置）不算。
-- 产品优势：用户夸的【每一个】优点，用最简短的词（如 速度快、体积小巧、安静、性价比高、散热好、接口丰富、可升级）。
+- 产品优势：用户夸的、且【说清了好在哪个具体方面】的优点，用最简短的词（如 速度快、体积小巧、安静、性价比高、散热好、接口丰富、可升级）。【用户专门花篇幅夸客服/售后/换货体验好，要抽成 客服好 / 售后好 / 保修给力】。【纯笼统、没说好在哪的夸赞不要抽】（如 不错、好电脑、很棒、推荐、表现好、非常满意、最高品质、物超所值、超出预期、完美 —— 这种没信息量，跳过）。
 - 问题反馈：用户反映的【每一个具体】缺点或故障，用【最简短的核心词】概括（2~6 字优先，如 风扇吵、4K卡顿、蓝牙故障、开机慢、内存焊死、无法开机、指纹失灵、退款慢），【绝不照抄整句】；没有明确问题就留空，别写 其他、一般、还行。
-- 相关软件：原文提到的【所有】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；中文游戏名加《》。【下面这些都不算软件、绝不要写】：① 硬件/接口/配件/芯片（HDMI、固态硬盘、显卡、内存、KVM、USB Coral、树莓派）；② 电脑机型/产品型号（如 Nucbox M5、UM890、Neptune HX99G、AI X1 Pro）；③ CPU/显卡型号（如 Radeon Vega、Ryzen 7、Intel N100）；④ 宽带/网络服务（如 Google Fiber）；⑤ 操作系统自带功能（如 Windows辅助功能、Windows安全中心）。
+- 相关软件：【只能填原文里逐字真实出现过的】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；中文游戏名加《》。【绝不许凭语境脑补】——比如原文只写了芯片/型号、根本没出现"Windows"几个字，就【绝不许】填 Windows；原文没出现该软件名的字就留空。【下面这些都不算软件、绝不要写】：① 硬件/接口/配件/芯片（HDMI、固态硬盘、显卡、内存、KVM、USB Coral、树莓派）；② 电脑机型/产品型号（Nucbox M5、UM890、Neptune HX99G、AI X1 Pro）；③ CPU/显卡型号（Radeon Vega、Ryzen 7、Intel N100）；④ 宽带/网络服务（Google Fiber）；⑤ 命令行指令（sudo、grub、apt 这类）；⑥ 网站/论坛名（Reddit、官网）；⑦ 没具体产品名的笼统"XX驱动 / XX控制软件"；⑧ 操作系统自带功能（Windows辅助功能、Windows安全中心）。
 
-只输出一个 JSON 对象，不要任何额外文字、不要 markdown：
-{"应用场景":"","产品优势":"","问题反馈":"","相关软件":""}
+只输出一个 JSON 对象（每个字段都是数组，一个元素一个标签，没有就给空数组 []），不要任何额外文字、不要 markdown：
+{"应用场景":[],"产品优势":[],"问题反馈":[],"相关软件":[]}
 
 评论：
 ${review}`;
@@ -408,11 +419,27 @@ function parseAIJson(text){
 }
 
 /* 清理单个字段:逗号统一成顿号,去掉空标签、空《》、去重 */
+/* V2.8:统一拆标签——先按 顿号/逗号/分号 拆,再做【受控空格拆分】:仅当一段含空格、且拆出的每小段都是
+   2~6个纯中文字(无英文/数字/符号)才按空格拆(治"价格划算 性能好 体积小"这种一格多标签);
+   含英文数字的段(Windows 11/USB 4/MT7925)整段保留,"性能 好"这种含1字段也不拆,避免误拆。 */
+function splitTags(v){
+  if(v==null) return [];
+  if(Array.isArray(v)) v = v.join("、");
+  const out = [];
+  String(v).split(/、|，|,|;|；/).forEach(seg=>{
+    seg = seg.trim(); if(!seg) return;
+    if(/\s/.test(seg)){
+      const parts = seg.split(/\s+/).map(p=>p.trim()).filter(Boolean);
+      if(parts.length>=2 && parts.every(p=> /^[一-鿿]{2,6}$/.test(p))){ parts.forEach(p=> out.push(p)); return; }
+    }
+    out.push(seg);
+  });
+  return out;
+}
 function cleanField(v){
   if(!v) return "";
   const seen = new Set();
-  return String(v).split(/、|，|,|;|；/)
-    .map(x=>x.trim())
+  return splitTags(v)
     .filter(x=> x && x!=="《》" && x!=="无" && x!=="无。" && x.toLowerCase()!=="nan" && x!=="N/A")
     .filter(x=>{ if(seen.has(x)) return false; seen.add(x); return true; })
     .join("、");
@@ -424,7 +451,7 @@ function summarize(details, field){
   details.forEach(d=>{
     const v = (d[field]||"").trim();
     if(!v) return;
-    v.split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && x!=="《》").forEach(tag=>{
+    splitTags(v).filter(x=> x && x!=="《》").forEach(tag=>{
       cnt[tag] = (cnt[tag]||0)+1;
     });
   });
@@ -569,11 +596,13 @@ $("startBtn").onclick = async ()=>{
   let totalReviews = 0;
   sheetNames.forEach(sn=>{
     const ws = rawWorkbook.Sheets[sn];
-    const direct = readReviewColumn(ws);              // V2.2:有「评论内容」列就直接拿那列当评论
-    const reviews = direct || cleanSheet(ws);          // 否则按爬虫原始格式清洗
+    const direct = readReviewColumn(ws);              // V2.7:null=没有「评论内容」列;[]=有列但全空;[...]=有评论
+    const reviews = direct || cleanSheet(ws);          // 没列(null)才退回爬虫格式清洗;direct=[] 是真值不会误退
     cleanedAll[sn] = {reviews};
     totalReviews += reviews.length;
-    logLine(`型号 [${sn}] ${direct ? "识别到「评论内容」列" : "爬虫原始数据清洗"} → ${reviews.length} 条评论`, "ok");
+    if(direct && reviews.length===0)        logLine(`型号 [${sn}] 识别到「评论内容」列但内容全为空 → 0 条,请检查该列`, "warn");
+    else if(!direct && reviews.length===0)  logLine(`型号 [${sn}] 未识别到「评论内容」列、也不是爬虫格式 → 0 条,请检查表头是否含「评论内容」`, "warn");
+    else                                    logLine(`型号 [${sn}] ${direct ? "识别到「评论内容」列" : "爬虫原始数据清洗"} → ${reviews.length} 条评论`, "ok");
   });
 
   let done = 0, reviewsDone = 0;
@@ -604,7 +633,7 @@ $("startBtn").onclick = async ()=>{
           "应用场景": cleanField(parsed["应用场景"]||""),
           "产品优势": cleanField(parsed["产品优势"]||""),
           "问题反馈": cleanField(parsed["问题反馈"]||""),
-          "相关软件": cleanField(parsed["相关软件"]||"")
+          "相关软件": verifySoftware(cleanField(parsed["相关软件"]||""), review, text)   // V2.7:去编造校验(review=英文原文,text=中文译文)
         };
       });
     }catch(err){
@@ -636,14 +665,23 @@ $("startBtn").onclick = async ()=>{
     resultProbTable  = categorizeField(resultData, "问题反馈");
     resultSoftwareStats = buildSoftwareStats(resultData);
     logLine(`大类目汇总:应用场景 ${resultSceneTable.length} 类、产品优势 ${resultAdvTable.length} 类、问题反馈 ${resultProbTable.length} 类;软件 ${resultSoftwareStats.length} 个(纯代码、无"其他")`, "ok");
-    // V2.4:产品优势/问题反馈 —— 每个类目内部用 AI 合并同义明细(类目间绝不互并)
+    // V2.6:先把兜底类目(整体好评/质量差)里的明细【逐条意图归到正确类目】,再【类目内部】合并同义明细
+    // V2.7:两个字段【并行】(各改各的 table,无数据竞争),且各自 try——一个字段失败不连累另一个
     try{
+      setProgress(totalUnits, totalUnits, "兜底项意图归类中…", startTime);
+      logLine("产品优势/问题反馈:把兜底笼统类里的明细逐条意图归到正确类目…", "ai");
+      await Promise.all([
+        reclassifyCatchall(key, resultAdvTable, "产品优势").catch(e=> logLine(`产品优势兜底归类失败(${e.message}),保留已完成部分`, "warn")),
+        reclassifyCatchall(key, resultProbTable, "问题反馈").catch(e=> logLine(`问题反馈兜底归类失败(${e.message}),保留已完成部分`, "warn"))
+      ]);
       setProgress(totalUnits, totalUnits, "明细意图识别合并中…", startTime);
-      logLine("产品优势/问题反馈:每个类目内部合并同义明细(逐类目过 AI、并发)…", "ai");
-      await mergeDetailsByIntent(key, resultAdvTable, "产品优势");
-      await mergeDetailsByIntent(key, resultProbTable, "问题反馈");
-      logLine("同义明细合并完成", "ok");
-    }catch(err){ logLine(`明细合并失败（${err.message}），退回未合并明细，不影响其它`, "warn"); }
+      logLine("每个类目内部合并同义明细(逐类目过 AI、并发)…", "ai");
+      await Promise.all([
+        mergeDetailsByIntent(key, resultAdvTable, "产品优势").catch(e=> logLine(`产品优势同义合并失败(${e.message}),保留已完成部分`, "warn")),
+        mergeDetailsByIntent(key, resultProbTable, "问题反馈").catch(e=> logLine(`问题反馈同义合并失败(${e.message}),保留已完成部分`, "warn"))
+      ]);
+      logLine("意图归类 + 同义明细合并完成", "ok");
+    }catch(err){ logLine(`明细归类/合并阶段异常（${err.message}），保留已完成的部分`, "warn"); }
     try{
       setProgress(totalUnits, totalUnits, "生成应用场景总结…", startTime);
       logLine("生成「应用场景总结」正文(1 次 AI)…", "ai");
@@ -716,7 +754,7 @@ function summaryRich(label, str){
 function aggregateAcross(resultData, field, topN){
   const m = {};
   Object.keys(resultData).forEach(sn=> (resultData[sn].details||[]).forEach(d=>{
-    String(d[field]||"").split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && x!=="《》").forEach(t=> m[t]=(m[t]||0)+1);
+    splitTags(d[field]).filter(x=> x && x!=="《》").forEach(t=> m[t]=(m[t]||0)+1);
   }));
   return Object.entries(m).sort((a,b)=> b[1]-a[1]).slice(0, topN||9999);
 }
@@ -725,9 +763,9 @@ function aggregateAcross(resultData, field, topN){
    说明:这套大类目是结合"大核迷你电脑"真实评论 + 人工范本敲定的;换品类需另调这张表。 */
 const FIELD_CATS = {
   "应用场景":[
-    {name:"办公/生产力", desc:"日常办公、远程办公、收发邮件、视频会议、文档/表格/PPT", re:/办公|生产力|文字处理|处理文字|写论文|写报告|做ppt|做幻灯|演示|处理文档|文档|表格|电子表格|spreadsheet|excel|word|office|报表|准备文件|做项目|收发邮件|电子邮件|邮件|视频会议|视频通话|会议|研讨会|远程办公|远程工作|工作站|工作|商务|创业|做生意|经营|商店|教师|金融服务|多任务|数字通信/i},
+    {name:"办公/生产力", desc:"日常办公、远程办公、收发邮件、视频会议、文档/表格/PPT", re:/办公|生产力|文字处理|处理文字|写论文|写报告|做ppt|做幻灯|演示|处理文档|文档|表格|电子表格|spreadsheet|excel|word|office|报表|准备文件|做项目|收发邮件|电子邮件|邮件|视频会议|视频通话|会议|研讨会|远程办公|远程工作|商务|创业|做生意|经营|商店|教师|金融服务|多任务|数字通信/i},
     {name:"游戏", desc:"各类游戏:玩游戏、轻度游戏、Steam/我的世界、复古游戏、游戏串流", re:/游戏|玩游戏|steam|minecraft|roblox|魔兽|模拟器|飞行模拟|复古|弹球|starfield|geforce|英雄|植物大战|桥梁建造|赛车房间|宿敌/i},
-    {name:"影音/流媒体/娱乐", desc:"看视频、看电影、听音乐、YouTube、媒体中心、串流", re:/看视频|视频$|观看|看电影|电影|youtube|流媒体|媒体|串流|影音|娱乐|看电视|看新闻|短视频|播客|powerpoint|netflix|听音乐|听歌|音乐|录音|播放|影院|直播|下载|音频校准|视频流|视频库|kodi|看片/i},
+    {name:"影音/流媒体/娱乐", desc:"看视频、看电影、听音乐、YouTube、媒体中心、串流", re:/看视频|视频$|观看|看电影|电影|youtube|流媒体|媒体(?!服务器)|串流|影音|娱乐|看电视|看新闻|短视频|播客|powerpoint|netflix|听音乐|听歌|音乐|录音|播放|影院|直播|看电影下载|视频流|视频库|kodi|看片/i},
     {name:"服务器/家庭实验室/NAS", desc:"自建服务器、媒体服务器、家庭实验室、NAS备份、Proxmox/Plex", re:/服务器|实验室|nas|proxmox|\bplex\b|web服|托管|集群|jellyfin|文件共享|备份|镜像/i},
     {name:"上网/浏览", desc:"上网、浏览网页、查资料、社交、网购", re:/上网|浏览|网页|冲浪|查资料|查查|查找|食谱|社交|购物|新闻|书签|在线支付|discord/i},
     {name:"AI/本地大模型/渲染", desc:"跑本地大模型、AI出图/推理、训练模型、视频渲染转码", re:/\bai\b|本地模型|本地llm|\bllm\b|大语言模型|大型语言模型|语言模型|图像生成|做图像|训练模型|ai工作|ai推理|ai代理|搭建.*模型|目标检测|图像识别|渲染|转码|帧视频|数据图像|天文图像/i},
@@ -744,10 +782,10 @@ const FIELD_CATS = {
   ],
   "产品优势":[
     {name:"体积小巧/便携", desc:"机身小、占地少、好携带", re:/体积|小巧|紧凑|迷你|便携|携带|轻便|轻巧|尺寸|重量轻|占地|占用空间|节省空间|桌面空间|不占|小型|小盒/i},
-    {name:"运行速度快/流畅/开机快", desc:"开机/运行/反应快、流畅不卡", re:/速度|运行快|流畅|不卡|反应快|反应迅速|响应|快速|迅速|启动|开机|超级快|超快|秒开|无卡顿|无缓冲|很快|\b快\b/i},
+    {name:"运行速度快/流畅/开机快", desc:"开机/运行/反应快、流畅不卡", re:/速度|运行快|流畅|不卡|反应快|反应迅速|响应|快速|迅速|启动|开机|超级快|超快|秒开|无卡顿|无缓冲|很快|跑得快|快(?![速捷])/i},
     {name:"性价比高/价格划算", desc:"便宜、物超所值、配置划算", re:/性价比|物超所值|物有所值|价格|便宜|划算|实惠|超值|低成本|低价/i},
     {name:"性能强劲", desc:"性能够强、跑得动大任务、AI/游戏性能好", re:/性能|强劲|强大|功能强|够用|够强|算力|跑得动|处理.*应用|功率|能量|全能|多功能|多任务|图形效果|超越|顶级|厉害|强$/i},
-    {name:"安静/低噪", desc:"风扇声小、几乎无声", re:/安静|静音|噪音小|噪音低|低噪|无声|声音小/i},
+    {name:"安静/低噪", desc:"风扇声小、几乎无声", re:/安静|静音|噪音小|噪音低|低噪|无声|声音小|声音低/i},
     {name:"散热好/不发烫/温控", desc:"散热做得好、不烫", re:/散热|温度低|温度控制|不发烫|不热|没有过热|不过热|降温|温控|凉|无风扇/i},
     {name:"好上手/设置简单/易用", desc:"开箱即用、好装好上手", re:/设置|易用|易于使用|好用|简单|上手|开箱即用|安装简|即插即用|配置方便|免维护|易于组装/i},
     {name:"接口/无线/多屏连接丰富", desc:"接口多够用、扩展坞、WiFi6/蓝牙、多屏支持", re:/接口|端口|usb|hdmi|扩展坞|连接性|wifi|wi-fi|蓝牙|无线|网口|双网|多屏|三屏|显示器|多显示|连接/i},
@@ -755,13 +793,14 @@ const FIELD_CATS = {
     {name:"内存/存储大/可升级", desc:"内存存储够大、能自己加", re:/内存|存储|硬盘|ssd|容量|升级|可扩展|扩展性|插槽/i},
     {name:"稳定/可靠", desc:"长期运行稳、可靠", re:/稳定|可靠|靠谱|耐操|兼容性好/i},
     {name:"外观/设计好看", desc:"外观漂亮、灯效、造型", re:/外观|漂亮|时尚|颜值|好看|设计|灯效|灯光|led|rgb|造型|酷|可爱|中国风/i},
-    {name:"低功耗/省电/能效", desc:"功耗低、省电费", re:/功耗|省电|耗电|节能|节电|能效/i},
-    {name:"整体好评/体验好", desc:"笼统好评:运行良好/完美、客户服务好、超出预期、很棒、满意等", re:null},
+    {name:"低功耗/省电/能效", desc:"功耗低、省电费", re:/功耗|省电|耗电|节能|节电|能效|能耗/i},
+    {name:"售后/服务好", desc:"客服好、技术支持好、保修/退换好", re:/售后|客服|客户服务|客户支持|技术支持|支持团队|保修|质保|退换|优质服务|服务好|服务迅速/i},
+    {name:"整体好评/体验好", desc:"笼统好评:运行良好、超出预期、很棒、满意等(实在没说具体好在哪的)", re:null},
   ],
   "问题反馈":[
     {name:"风扇/噪音问题", desc:"风扇太吵、风扇故障/效率低", re:/风扇|噪音|咔哒|吵|响|蜂鸣|嗡嗡/},
-    {name:"散热差/发烫", desc:"散热不行、运行发烫、温度高、导热膏差", re:/散热|过热|发热|温度|运行热|烫|导热膏/},
-    {name:"无线连接(Wi-Fi/蓝牙)差", desc:"Wi-Fi/蓝牙 连不上、慢、老断", re:/wi-?fi|wifi|网络|以太网|断网|联网|网卡|蓝牙|局域网唤醒/i},
+    {name:"散热差/发烫", desc:"散热不行、运行发烫、温度高、导热膏差", re:/散热|过热|发热|温度|运行热|烫|导热膏|节流|热降频/},
+    {name:"无线连接(Wi-Fi/蓝牙)差", desc:"Wi-Fi/蓝牙 连不上、慢、老断", re:/wi-?fi|wifi|网络|以太网|断网|联网|网卡|蓝牙|局域网唤醒|信号弱|信号差|信号/i},
     {name:"显卡弱/崩", desc:"显卡性能弱、显存限制、帧数低、显卡崩", re:/显卡|gpu|显存|vram|帧数|帧率/i},
     {name:"性能差/卡顿/运行慢", desc:"跑得慢、卡顿掉帧、没响应、带不动游戏、等待久", re:/性能|运行慢|缓慢|速度慢|速度下降|变慢|慢$|卡顿|卡帧|跳帧|无响应|掉帧|迟钝|延迟|等待时间|时间长|效率低|带不动|加载不了|运行不了|玩不了|复制.*卡|启动慢|文件卡|文件名|下载.*慢|不适合.*游戏|无法运行.*游戏|高强度游戏|现代游戏|芯片功能|资源.*程序/i},
     {name:"开不了机/变砖", desc:"无法开机/启动、卡启动菜单、用着变砖", re:/无法开机|开不了机|无法启动|开机|变砖|无法使用|彻底关机|启动问题|启动菜单|启动不稳|进不去|启动固件|启动卡|nx模式/i},
@@ -778,7 +817,8 @@ const FIELD_CATS = {
     {name:"售后/客服/支持差", desc:"售后/客服/技术支持差、退换难", re:/售后|客服|客户服务|客户支持|技术支持|无法获得支持|无人接听|无人理|退换|退货/},
     {name:"价格贵/性价比低", desc:"嫌贵、涨价、不划算", re:/性价比低|价格|涨价|贵/},
     {name:"缺配件/说明书差", desc:"没光驱、说明书看不清、线短", re:/光驱|说明书|文档|配件|线缆|附带|找不到/},
-    {name:"质量差/容易坏/做工差", desc:"硬件故障、开箱即坏、用没多久坏、保修短、虚假宣传等", re:null},
+    {name:"硬件故障/容易坏", desc:"开箱即坏、用没多久坏、彻底坏、报废、缺陷、做工差", re:/开箱即坏|彻底坏|坏了|坏掉|损坏|报废|烧毁|烧坏|罢工|变质|寿命短|不耐用|有缺陷|缺陷|质量控制|做工差|做工差劲|设备故障|硬件故障|硬件问题|一年.*坏|几个月.*坏|用.{0,4}就坏/i},
+    {name:"质量差/其它笼统问题", desc:"笼统差评:不行、太差、不推荐、虚假宣传等(说不清具体的)", re:null},
   ],
 };
 /* V2.0:应用场景大类归属判断 */
@@ -867,9 +907,14 @@ async function aiMergeWithinCat(key, fieldName, catName, subs){
   const valid = new Set(subs.map(s=> s[0]));
   const rawCount = new Map(subs);
   const listed = subs.map(s=> `${s[0]}(${s[1]})`).join("、");
-  const prompt = `下面是「${catName}」这个类别下的"${fieldName}"明细标签（括号是各自次数）。请把【意思相同、只是说法不同】的合并成一组——只有同义/近义/词形不同/详略不同才算同一组（例：体积小巧=小巧=体积小=尺寸小巧=超级紧凑；运行速度快=速度快=运行快=快速；风扇噪音大=风扇噪音=噪音大）。
-【务必保守】不同的点必须分开（节省空间≠体积小巧；启动快≠运行快；散热好≠安静）；拿不准就别合并。
-【组名·铁律】每组组名必须【逐字照抄】该组里出现次数最高的那个原标签，绝不自己造新词、绝不用清单里没有的词。
+  const prompt = `下面是「${catName}」类别下的"${fieldName}"明细标签（括号是次数）。请把【在说同一回事、只是说法不同】的合并成一组。
+【判据·按意思不按字面，能并就并、别太碎】只要描述的是同一个属性/同一个意思就并成一组，例：
+  · 体积小巧 = 体积小 = 小巧 = 紧凑 = 结构紧凑 = 功能紧凑 = 配置紧凑 = 尺寸小（都在说"机身小"）
+  · 速度快 = 运行快 = 快速 = 开机快 = 反应快（都在说"快"）
+  · 安静 = 噪音小 = 噪音低 = 声音低 = 风扇安静（都在说"静"）
+  · 做工扎实 = 做工好 = 用料好 = 制作精良（都在说"做工好"）
+【只有确实是另一个属性/另一个意思才分开】例：节省空间(讲"省地方/收益")≠体积小巧(讲"机身尺寸")；开机快(开机)≠网络快(网络)；散热好≠安静。
+【组名·铁律】每组组名必须【逐字照抄】该组里次数最高的那个原标签，绝不自己造新词、绝不用清单里没有的词。
 输出【纯文本】，每行一个合并组，格式：组名 <= 标签1、标签2、标签3。只列【真的要合并】的组；单独一个没同义词的不用写。不要 JSON、不要解释。
 明细清单：
 ${listed}`;
@@ -893,13 +938,88 @@ ${listed}`;
   });
   return map;
 }
+/* V2.6:把掉进【兜底类目】(整体好评/质量差)的明细,用 AI【逐条意图归类】到正确的具体类目(归不进的留兜底)。原地改 table。 */
+async function reclassifyCatchall(key, table, fieldName){
+  if(!table || !table.length) return;
+  const cats = FIELD_CATS[fieldName]; if(!cats) return;
+  const defName = (cats.find(c=> !c.re)||{}).name;
+  const catchall = table.find(r=> r.大类 === defName);
+  if(!catchall || !catchall.细分 || catchall.细分.length < 3) return;
+  const targets = cats.filter(c=> c.re).map(c=> c.name);
+  // V2.8(用户定:长尾全送):全部兜底标签都送AI归类,含频次1的——兜底大筐的主体就是这些count=1长尾
+  const toClassify = catchall.细分.slice();
+  if(toClassify.length < 3){ return; }
+  const allTags = new Set(toClassify.map(s=> s[0]));   // 用于"新建类目名必须=某真实标签"的硬校验(防编造)
+  const valid = allTags;
+  const clean = s=> s.replace(/[（(].*$/,"").replace(/[。.、，,\s]/g,"").trim();
+  // V2.8:目标匹配——①精确等于完整类目名 ②等于类目名按/切的某段 ③【唯一子串命中】(s只命中一个类目才接受,
+  //   既不像旧版"只精确"把"信号弱=>无线"这种正确归类丢掉,又不像更旧版子串模糊把单字"好"乱配)
+  const findTargetExisting = (s)=>{ s = clean(s);
+    if(!s || /^保留$/.test(s)) return null;
+    if(targets.includes(s)) return s;
+    const seg = targets.find(t=> t.split("/").some(p=> p.replace(/[（()）]/g,"").trim()===s));
+    if(seg) return seg;
+    const hits = targets.filter(t=> t.replace(/[（()）。.、，,\s]/g,"").includes(s));
+    return hits.length===1 ? hits[0] : null;
+  };
+  const BATCH = 40, batches = [];
+  for(let i=0;i<toClassify.length;i+=BATCH) batches.push(toClassify.slice(i,i+BATCH));
+  const partials = await mapPool(batches, CONCURRENCY, async (batch)=>{
+    const listed = batch.map(s=> `${s[0]}(${s[1]})`).join("、");
+    const prompt = `下面这些"${fieldName}"标签都被归进了"${defName}"(兜底笼统类)。请把每个标签【按真实意思】归到下面某个【具体类目】;
+如果有一簇标签讲的是清单里【没有】的概念(比如 显卡/指纹/数据丢失/接口松动…),你可以【新建一个类目】,类目名【必须逐字照抄这簇里次数最高的那个真实标签】(如"显卡好""指纹失灵"),绝不许自己另造词;
+如果确实笼统、没说具体(不错/好电脑/推荐/很棒/表现好),就标"保留"。
+【可选类目】(逐字照抄【完整】类目名,不许只写一个字):
+${targets.map((t,i)=> (i+1)+". "+t).join("\n")}
+
+输出【纯文本】,每行一个:标签 => 类目名(清单里的、或你新建的真实标签名、或 保留)。不要解释、不要JSON。
+标签清单:
+${listed}`;
+    let out = ""; try{ out = String(await callAI(key, prompt, 120000, 3072)||""); }catch(e){ return null; }
+    const mv = [];
+    out.split(/\r?\n/).forEach(line=>{
+      const m = line.split(/=>|＝>|->|→|=|：|:/);
+      if(m.length < 2) return;
+      const tag = m[0].replace(/[（(]\s*\d+\s*[）)]/g,"").replace(/[「」『』\[\]【】、,，\d.\s]/g,"").trim();
+      if(!valid.has(tag)) return;
+      const rawTgt = m.slice(1).join("");
+      let tgt = findTargetExisting(rawTgt), isNew = false;          // 先归现有类目
+      if(!tgt){ const c = clean(rawTgt); if(allTags.has(c) && c!==tag){ tgt = c; isNew = true; } }  // 否则:新建类目(名字必须=某真实标签,且不是它自己)
+      if(tgt) mv.push([tag, tgt, isNew]);
+    });
+    return mv;
+  });
+  const moveTo = new Map(); const newCats = new Set();
+  partials.forEach(mv=>{ if(mv) mv.forEach(([tag,tgt,isNew])=>{ moveTo.set(tag, tgt); if(isNew) newCats.add(tgt); }); });
+  // 新建类目:把种子标签(=类目名本身)也并进该类目(它本来还躺在兜底里)
+  newCats.forEach(nc=>{ if(allTags.has(nc) && !moveTo.has(nc)) moveTo.set(nc, nc); });
+  // 防碎片化:新建类目最终若不足2个成员(种子被AI归去别处的边角情况),撤销该类目、其标签退回兜底
+  const tgtCount = new Map(); moveTo.forEach(t=> tgtCount.set(t, (tgtCount.get(t)||0)+1));
+  newCats.forEach(nc=>{ if((tgtCount.get(nc)||0) < 2){ for(const [tg,t] of [...moveTo]) if(t===nc) moveTo.delete(tg); newCats.delete(nc); } });
+  if(!moveTo.size){ logLine(`「${fieldName}」兜底归类:AI未搬动任何标签(可能都属笼统,已保留)`, "warn"); return; }
+  const byName = new Map(table.map(r=> [r.大类, r]));
+  const descOf = {}; cats.forEach(c=> descOf[c.name]=c.desc);
+  const remain = [];
+  catchall.细分.forEach(([tag,c])=>{ const tgt = moveTo.get(tag);
+    if(tgt){
+      if(!byName.has(tgt)){ const row={大类:tgt, 描述:descOf[tgt]||(newCats.has(tgt)?"(从评论里归出的具体类)":""), 频次:0, 占比:0, 细分:[]}; table.push(row); byName.set(tgt,row); }
+      byName.get(tgt).细分.push([tag,c]);
+    } else remain.push([tag,c]);
+  });
+  catchall.细分 = remain;
+  // 重算频次/占比/排序
+  const total = table.reduce((s,r)=> s + (r.细分||[]).reduce((a,b)=>a+b[1],0), 0) || 1;
+  table.forEach(r=>{ r.频次 = (r.细分||[]).reduce((a,b)=>a+b[1],0); r.占比 = Math.round(r.频次/total*100); (r.细分||[]).sort((a,b)=> b[1]-a[1]); });
+  table.sort((a,b)=> b.频次 - a.频次);
+  logLine(`「${fieldName}」兜底归类:${moveTo.size} 个标签归位${newCats.size?`(新建 ${newCats.size} 个真实词类目)`:""}`, "ok");
+}
 /* V2.4:把汇总表里【每个类目内部】的同义明细合并(类目较多明细的才过 AI;类目之间绝不互并)。原地改 table 的"细分",返回合并组数。 */
 async function mergeDetailsByIntent(key, table, fieldName, onStep){
   if(!table || !table.length) return 0;
   let merged = 0;
   await mapPool(table, CONCURRENCY, async (r)=>{
     const subs = r.细分 || [];
-    if(subs.length < 6){ if(onStep) onStep(); return; }   // 明细太少本来就干净,不用合并
+    if(subs.length < 2){ if(onStep) onStep(); return; }   // V2.8:只有1个明细才跳过(同义词最该并的恰是小类目,如 安静/低噪 只4个但 噪音小/噪音低 必须并)
     const map = await aiMergeWithinCat(key, fieldName, r.大类, subs);
     if(map && map.size){
       const cnt = new Map();
@@ -1015,11 +1135,11 @@ $("downloadBtn").onclick = async ()=>{
         const lines = subs.length ? subs.map(s=> [s[0], s[1]]) : [["（无明细）", r.频次]];
         const start = ws.rowCount + 1;
         lines.forEach((ln,i)=>{
-          const row = ws.addRow([ i===0 ? r.大类 : "", ln[0], ln[1], Math.round(ln[1]/total*100)+"%", "" ]);
+          const row = ws.addRow([ i===0 ? r.大类 : "", ln[0], ln[1], total ? ln[1]/total : 0, "" ]);  // V2.7:占比写真小数+百分比格式,可计算/可作图
           row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
           row.getCell(2).alignment={vertical:"middle",wrapText:true};
           row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
-          row.getCell(4).alignment={horizontal:"center",vertical:"middle"};
+          row.getCell(4).alignment={horizontal:"center",vertical:"middle"}; row.getCell(4).numFmt="0%";
         });
         const end = ws.rowCount;
         if(end > start) ws.mergeCells(start,1,end,1);
@@ -1043,7 +1163,8 @@ $("downloadBtn").onclick = async ()=>{
       const h = ws.addRow(["应用场景","总频次","占比","",""]);
       [1,2,3].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
       const first = ws.rowCount + 1;
-      resultSceneTable.forEach(r=>{ const row=ws.addRow([r.大类, r.频次, r.占比+"%","",""]); row.getCell(1).alignment={vertical:"middle",wrapText:true}; row.getCell(2).alignment={horizontal:"center"}; row.getCell(3).alignment={horizontal:"center"}; });
+      const totalScene = resultSceneTable.reduce((s,r)=> s + (r.频次||0), 0) || 1;   // V2.7:占比用真小数(频次/总和)+百分比格式
+      resultSceneTable.forEach(r=>{ const row=ws.addRow([r.大类, r.频次, r.频次/totalScene,"",""]); row.getCell(1).alignment={vertical:"middle",wrapText:true}; row.getCell(2).alignment={horizontal:"center"}; row.getCell(3).alignment={horizontal:"center"}; row.getCell(3).numFmt="0%"; });
       const last = ws.rowCount;
       try{ ws.addConditionalFormatting({ ref:`B${first}:B${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"min"},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
     }
