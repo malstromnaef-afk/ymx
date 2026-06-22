@@ -83,7 +83,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V2.2</span></h1>
+    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V2.5</span></h1>
     <div class="sub">重新提取四字段 → 「总结」表(可勾选):应用场景总结(逐场景挖具体需求)+饼图数据·产品优势/问题反馈两层汇总·软件统计(带描述)</div>
   </header>
 
@@ -377,13 +377,13 @@ function buildPrompt(review){
 
 【完整性·重点】原文里出现的所有 用途、优点、问题、软件 都要抽全，不要只抽一两个就算了；一条评论常有好几个标签，用中文顿号"、"分隔。
 
-【标签要求】一律简体中文；软件名/系统名/游戏名/型号保留原文（如 Windows 11、Ubuntu、Plex、KAMRUI）；每个标签要短（2~8 字，像 安静、运行速度快、性价比高、做服务器），不要整句。
+【标签要求·要精简】一律简体中文；软件名/系统名/游戏名保留原文（如 Windows 11、Ubuntu、Plex）；【每个标签尽量短——概括成 2~6 字的核心词，能省就省，绝不照抄长句】，例如"指纹识别器无法使用"→"指纹失灵"、"亚马逊退款需30天"→"退款慢"、"高分辨率音频卡顿"→"音频卡顿"、"无法在Windows里设置PIN针"→"PIN设置失败"、"多余的硬盘槽显示不出来"→"硬盘槽不识别"。
 
 【四个字段】
-- 应用场景：用户【拿这台迷你电脑来做什么】的用途。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、做媒体服务器、视频监控、跑虚拟机、目标检测、编程；原文提到几个用途就抽几个。设备本身/一个动作/泛词（电脑、运行、性能、设置）不算。
-- 产品优势：用户夸的【每一个】优点（如 速度快、体积小巧、安静、性价比高、散热好、接口丰富、Wi-Fi好、可升级）。
-- 问题反馈：用户反映的【每一个具体】缺点或故障，用【简短短语】概括（约 4~10 字，如 风扇噪音大、4K视频卡顿、蓝牙故障、开机慢、内存焊死、无法开机），【不要照抄整句】；没有明确问题就留空，别写 其他、一般、还行。
-- 相关软件：原文提到的【所有】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；中文游戏名加《》。【硬件/接口/配件/芯片不算软件】（如 HDMI、固态硬盘、显卡、KVM、USB Coral、树莓派 不要写）；操作系统自带功能（如 Windows辅助功能）也不算独立软件。
+- 应用场景：用户【拿这台迷你电脑来做什么】的用途。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、做媒体服务器、视频监控、跑虚拟机、编程；原文提到几个用途就抽几个。设备本身/一个动作/泛词（电脑、运行、性能、设置）不算。
+- 产品优势：用户夸的【每一个】优点，用最简短的词（如 速度快、体积小巧、安静、性价比高、散热好、接口丰富、可升级）。
+- 问题反馈：用户反映的【每一个具体】缺点或故障，用【最简短的核心词】概括（2~6 字优先，如 风扇吵、4K卡顿、蓝牙故障、开机慢、内存焊死、无法开机、指纹失灵、退款慢），【绝不照抄整句】；没有明确问题就留空，别写 其他、一般、还行。
+- 相关软件：原文提到的【所有】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；中文游戏名加《》。【下面这些都不算软件、绝不要写】：① 硬件/接口/配件/芯片（HDMI、固态硬盘、显卡、内存、KVM、USB Coral、树莓派）；② 电脑机型/产品型号（如 Nucbox M5、UM890、Neptune HX99G、AI X1 Pro）；③ CPU/显卡型号（如 Radeon Vega、Ryzen 7、Intel N100）；④ 宽带/网络服务（如 Google Fiber）；⑤ 操作系统自带功能（如 Windows辅助功能、Windows安全中心）。
 
 只输出一个 JSON 对象，不要任何额外文字、不要 markdown：
 {"应用场景":"","产品优势":"","问题反馈":"","相关软件":""}
@@ -636,6 +636,14 @@ $("startBtn").onclick = async ()=>{
     resultProbTable  = categorizeField(resultData, "问题反馈");
     resultSoftwareStats = buildSoftwareStats(resultData);
     logLine(`大类目汇总:应用场景 ${resultSceneTable.length} 类、产品优势 ${resultAdvTable.length} 类、问题反馈 ${resultProbTable.length} 类;软件 ${resultSoftwareStats.length} 个(纯代码、无"其他")`, "ok");
+    // V2.4:产品优势/问题反馈 —— 每个类目内部用 AI 合并同义明细(类目间绝不互并)
+    try{
+      setProgress(totalUnits, totalUnits, "明细意图识别合并中…", startTime);
+      logLine("产品优势/问题反馈:每个类目内部合并同义明细(逐类目过 AI、并发)…", "ai");
+      await mergeDetailsByIntent(key, resultAdvTable, "产品优势");
+      await mergeDetailsByIntent(key, resultProbTable, "问题反馈");
+      logLine("同义明细合并完成", "ok");
+    }catch(err){ logLine(`明细合并失败（${err.message}），退回未合并明细，不影响其它`, "warn"); }
     try{
       setProgress(totalUnits, totalUnits, "生成应用场景总结…", startTime);
       logLine("生成「应用场景总结」正文(1 次 AI)…", "ai");
@@ -854,6 +862,56 @@ function categorizeField(resultData, field){
                         细分:(subs.get(name)||[]).slice().sort((a,b)=> b[1]-a[1]) }));
 }
 
+/* V2.4:在【单个类目内部】用 AI 把同义明细合并(只在类目内、组名照抄真实最高频词、不造词、不跨类)。返回 member->组名 的 map。 */
+async function aiMergeWithinCat(key, fieldName, catName, subs){
+  const valid = new Set(subs.map(s=> s[0]));
+  const rawCount = new Map(subs);
+  const listed = subs.map(s=> `${s[0]}(${s[1]})`).join("、");
+  const prompt = `下面是「${catName}」这个类别下的"${fieldName}"明细标签（括号是各自次数）。请把【意思相同、只是说法不同】的合并成一组——只有同义/近义/词形不同/详略不同才算同一组（例：体积小巧=小巧=体积小=尺寸小巧=超级紧凑；运行速度快=速度快=运行快=快速；风扇噪音大=风扇噪音=噪音大）。
+【务必保守】不同的点必须分开（节省空间≠体积小巧；启动快≠运行快；散热好≠安静）；拿不准就别合并。
+【组名·铁律】每组组名必须【逐字照抄】该组里出现次数最高的那个原标签，绝不自己造新词、绝不用清单里没有的词。
+输出【纯文本】，每行一个合并组，格式：组名 <= 标签1、标签2、标签3。只列【真的要合并】的组；单独一个没同义词的不用写。不要 JSON、不要解释。
+明细清单：
+${listed}`;
+  let out = "";
+  try{ out = String(await callAI(key, prompt, 120000)||""); }catch(e){ return new Map(); }
+  const map = new Map();
+  out.split(/\r?\n/).forEach(line=>{
+    line = line.trim().replace(/^[-*•\d.、)）\s]+/,"");
+    const parts = line.split(/<=|<-|=>|⇐|←|＝|=(?!=)/);
+    if(parts.length < 2) return;
+    const members = parts.slice(1).join(" ").split(/、|，|,|;|；|\s+|\//)
+      .map(x=> x.replace(/[（(]\s*\d+\s*[）)]/g,"").replace(/[「」『』\[\]【】]/g,"").trim()).filter(x=> valid.has(x));
+    const head = parts[0].replace(/[（(]\s*\d+\s*[）)]/g,"").replace(/[「」『』\[\]【】]/g,"").trim();
+    if(valid.has(head)) members.push(head);
+    const uniq = [...new Set(members)];
+    if(uniq.length >= 2){
+      let best = uniq[0], bn = rawCount.get(best)||0;
+      uniq.forEach(m=>{ const n = rawCount.get(m)||0; if(n > bn){ best = m; bn = n; } });
+      uniq.forEach(m=>{ if(m !== best) map.set(m, best); });
+    }
+  });
+  return map;
+}
+/* V2.4:把汇总表里【每个类目内部】的同义明细合并(类目较多明细的才过 AI;类目之间绝不互并)。原地改 table 的"细分",返回合并组数。 */
+async function mergeDetailsByIntent(key, table, fieldName, onStep){
+  if(!table || !table.length) return 0;
+  let merged = 0;
+  await mapPool(table, CONCURRENCY, async (r)=>{
+    const subs = r.细分 || [];
+    if(subs.length < 6){ if(onStep) onStep(); return; }   // 明细太少本来就干净,不用合并
+    const map = await aiMergeWithinCat(key, fieldName, r.大类, subs);
+    if(map && map.size){
+      const cnt = new Map();
+      subs.forEach(([tag,c])=>{ const g = map.get(tag) || tag; cnt.set(g, (cnt.get(g)||0)+c); });
+      r.细分 = [...cnt.entries()].sort((a,b)=> b[1]-a[1]);
+      merged += map.size;
+    }
+    if(onStep) onStep();
+  });
+  return merged;
+}
+
 /* V1.7:软件类别【固定规则】(软件名→类别;先匹配先归;没匹配进"工具/实用程序")。换品类需调这张表。 */
 const SOFTWARE_CATS = [
   {name:"操作系统", re:/windows|win ?1[01]|win ?\d|linux|ubuntu|debian|fedora|mint|centos|alma|arch|manjaro|opensuse|q4os|haos|chrome ?os|mac ?os|freebsd|truenas|unraid|raspberry pi os|操作系统|系统$/i},
@@ -953,11 +1011,8 @@ $("downloadBtn").onclick = async ()=>{
       const dataFirst = ws.rowCount + 1;
       rows.forEach(r=>{
         const subs = r.细分 || [];
-        const main = subs.filter(s=> s[1] >= 2);
-        const tail = subs.filter(s=> s[1] < 2);
-        const lines = main.map(s=> [s[0], s[1]]);
-        if(tail.length){ const nm=tail.map(s=> s[0]); lines.push(["其余 "+tail.length+" 种各 1 次："+nm.slice(0,40).join("、")+(nm.length>40?"…（完整明细见各产品 sheet）":""), tail.length]); }
-        if(!lines.length) lines.push(["（无明细）", r.频次]);
+        // V2.3:照「软件提及统计」做 —— 每个明细都单独一行(1次的也摊开),不再打包成"其余N种各1次"
+        const lines = subs.length ? subs.map(s=> [s[0], s[1]]) : [["（无明细）", r.频次]];
         const start = ws.rowCount + 1;
         lines.forEach((ln,i)=>{
           const row = ws.addRow([ i===0 ? r.大类 : "", ln[0], ln[1], Math.round(ln[1]/total*100)+"%", "" ]);
