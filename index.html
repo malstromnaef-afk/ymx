@@ -25,7 +25,7 @@
   .panel-title{font-size:13px;font-weight:600;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;display:flex;align-items:center;gap:8px}
   .step-num{display:inline-flex;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;align-items:center;justify-content:center;font-weight:700}
   label{display:block;font-size:13px;font-weight:600;margin-bottom:6px}
-  input[type=text],input[type=password]{
+  input[type=text],input[type=password],select{
     width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:8px;font-size:14px;font-family:inherit;
   }
   input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
@@ -83,7 +83,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V2.8</span></h1>
+    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V2.9</span></h1>
     <div class="sub">重新提取四字段 → 「总结」表(可勾选):应用场景总结(逐场景挖具体需求)+饼图数据·产品优势/问题反馈两层汇总·软件统计(带描述)</div>
   </header>
 
@@ -96,7 +96,17 @@
       </div>
       <button class="btn-ghost" id="saveKey">保存</button>
     </div>
-    <div class="hint">没有 Key？去 <a href="https://www.bigmodel.cn/usercenter/proj-mgmt/apikeys" target="_blank">智谱开放平台</a> 免费申请（中国大陆手机号可注册）。Key 仅保存在你本机浏览器，不会发送到任何第三方。</div>
+    <div class="key-row" style="margin-top:10px">
+      <div>
+        <select id="modelSel">
+          <option value="glm-4.6v">分析模型：glm-4.6v（推荐）</option>
+          <option value="glm-4.5-air">分析模型：glm-4.5-air（较强）</option>
+          <option value="glm-4.5-flash">分析模型：glm-4.5-flash（稍弱）</option>
+          <option value="glm-4-flash">分析模型：glm-4-flash（更弱）</option>
+        </select>
+      </div>
+    </div>
+    <div class="hint">没有 Key？去 <a href="https://www.bigmodel.cn/usercenter/proj-mgmt/apikeys" target="_blank">智谱开放平台</a> 免费申请（中国大陆手机号可注册）。Key 仅保存在你本机浏览器，不会发送到任何第三方。模型可随时切换（glm-4.5/4.6 系列会自动关闭深度思考以提速省 token）。</div>
     <div class="key-saved" id="keySaved">✓ Key 已保存到本地</div>
   </div>
 
@@ -143,7 +153,7 @@
 
 <script>
 const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-const MODEL = "glm-4.5-air"; // 强模型(你账户有1200万免费token);下面会自动关闭"深度思考"→约1.2秒/条。想省额度可改回 glm-4-flash(更弱,归并会不稳)
+function getModel(){ return ($("modelSel") && $("modelSel").value.trim()) || "glm-4.6v"; } // 模型从界面下拉框选,默认 glm-4.6v(有免费额度);glm-4.5/4.6 系列自动关"深度思考"→约1.2秒/条
 const $ = id => document.getElementById(id);
 let rawWorkbook = null, resultData = null, resultSceneSummary = "", resultSceneTable = [], resultSoftwareStats = [];   // V1.1:应用场景总结/汇总 + 软件提及统计
 let resultAdvTable = [], resultProbTable = [];   // V1.4:产品优势汇总 / 问题反馈汇总(纯计数)
@@ -182,6 +192,12 @@ $("saveKey").onclick = ()=>{
   $("keySaved").style.display="block";
   toast("Key 已保存");
 };
+(function initModel(){   // 记住上次选的模型,切换时存本地
+  const sel = $("modelSel"); if(!sel) return;
+  const m = localStorage.getItem("zhipu_model");
+  if(m && [...sel.options].some(o=> o.value===m)) sel.value = m;
+  sel.onchange = ()=>{ localStorage.setItem("zhipu_model", sel.value); toast("分析模型已切换为 "+sel.value); };
+})();
 
 /* ---------- 文件上传 ---------- */
 const drop = $("drop"), fileInput = $("fileInput");
@@ -302,6 +318,7 @@ function readReviewColumn(ws){
 /* ---------- 调用智谱 API ---------- */
 async function callAI(key, prompt, timeoutMs, maxTokens, _attempt){
   _attempt = _attempt || 1;
+  const MODEL = getModel();   // 当前界面下拉框选的模型(默认 glm-4.6v)
   timeoutMs = timeoutMs || 60000;   // 默认60秒;跨全部型号的大归并调用(标签很多)可传更长,如 180000
   const ctrl = new AbortController();
   const timer = setTimeout(()=> ctrl.abort(), timeoutMs);   // 超时兜底:防止某次请求卡住不返回,把整个流程卡死
@@ -388,13 +405,15 @@ function buildPrompt(review){
 
 【完整性·重点】原文里出现的所有 用途、优点、问题、软件 都要抽全，不要只抽一两个就算了。【每个字段是一个数组,一个数组元素只放一个标签;有几个标签就放几个元素,绝不要把多个标签塞进同一个元素、绝不用空格连接多个标签】(错误示例:["价格划算 性能好 体积小"];正确:["价格划算","性能好","体积小"])。
 
-【标签要求·要精简】一律简体中文；软件名/系统名/游戏名保留原文（如 Windows 11、Ubuntu、Plex）；【每个标签尽量短——概括成 2~6 字的核心词，能省就省，绝不照抄长句；任何标签超过 8 个汉字一律压缩】，例如"指纹识别器无法使用"→"指纹失灵"、"亚马逊退款需30天"→"退款慢"、"与4TB Teamgroup固态硬盘不兼容"→"SSD不兼容"、"无线键盘鼠标接到背面USB口干扰严重"→"外设干扰"、"无法在Windows里设置PIN针"→"PIN设置失败"。
+【标签要求】一律简体中文。
+　·【软件 / 系统 / 游戏名 例外——直接照原文【完整】提取,绝不简写、绝不缩写、绝不翻译、绝不压缩,原文多长就写多长】(如 Windows 11、Ubuntu、Home Assistant、Stable Diffusion、Plex Media Server、Visual Studio Code、《赛博朋克2077》)。这条优先级最高,不受下面"精简/压缩"约束。
+　·【其余三个字段(应用场景 / 产品优势 / 问题反馈)的标签要精简——概括成 2~6 字的核心词,能省就省,绝不照抄长句;任何标签超过 8 个汉字一律压缩】,例如"指纹识别器无法使用"→"指纹失灵"、"亚马逊退款需30天"→"退款慢"、"与4TB Teamgroup固态硬盘不兼容"→"SSD不兼容"、"无线键盘鼠标接到背面USB口干扰严重"→"外设干扰"、"无法在Windows里设置PIN针"→"PIN设置失败"。
 
 【四个字段】
 - 应用场景：用户【拿这台迷你电脑来做什么】的用途。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、做媒体服务器、视频监控、跑虚拟机、编程；原文提到几个用途就抽几个。设备本身/一个动作/泛词（电脑、运行、性能、设置）不算。
 - 产品优势：用户夸的、且【说清了好在哪个具体方面】的优点，用最简短的词（如 速度快、体积小巧、安静、性价比高、散热好、接口丰富、可升级）。【用户专门花篇幅夸客服/售后/换货体验好，要抽成 客服好 / 售后好 / 保修给力】。【纯笼统、没说好在哪的夸赞不要抽】（如 不错、好电脑、很棒、推荐、表现好、非常满意、最高品质、物超所值、超出预期、完美 —— 这种没信息量，跳过）。
 - 问题反馈：用户反映的【每一个具体】缺点或故障，用【最简短的核心词】概括（2~6 字优先，如 风扇吵、4K卡顿、蓝牙故障、开机慢、内存焊死、无法开机、指纹失灵、退款慢），【绝不照抄整句】；没有明确问题就留空，别写 其他、一般、还行。
-- 相关软件：【只能填原文里逐字真实出现过的】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；中文游戏名加《》。【绝不许凭语境脑补】——比如原文只写了芯片/型号、根本没出现"Windows"几个字，就【绝不许】填 Windows；原文没出现该软件名的字就留空。【下面这些都不算软件、绝不要写】：① 硬件/接口/配件/芯片（HDMI、固态硬盘、显卡、内存、KVM、USB Coral、树莓派）；② 电脑机型/产品型号（Nucbox M5、UM890、Neptune HX99G、AI X1 Pro）；③ CPU/显卡型号（Radeon Vega、Ryzen 7、Intel N100）；④ 宽带/网络服务（Google Fiber）；⑤ 命令行指令（sudo、grub、apt 这类）；⑥ 网站/论坛名（Reddit、官网）；⑦ 没具体产品名的笼统"XX驱动 / XX控制软件"；⑧ 操作系统自带功能（Windows辅助功能、Windows安全中心）。
+- 相关软件：【只能填原文里逐字真实出现过的】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；【一律照原文写完整全名,绝不简写、绝不缩写、绝不只写一半】(原文写 Home Assistant 就写 Home Assistant、不要缩成 HA;写 Stable Diffusion 就写全、不要缩成 SD)；中文游戏名加《》。【绝不许凭语境脑补】——比如原文只写了芯片/型号、根本没出现"Windows"几个字，就【绝不许】填 Windows；原文没出现该软件名的字就留空。【下面这些都不算软件、绝不要写】：① 硬件/接口/配件/芯片（HDMI、固态硬盘、显卡、内存、KVM、USB Coral、树莓派）；② 电脑机型/产品型号（Nucbox M5、UM890、Neptune HX99G、AI X1 Pro）；③ CPU/显卡型号（Radeon Vega、Ryzen 7、Intel N100）；④ 宽带/网络服务（Google Fiber）；⑤ 命令行指令（sudo、grub、apt 这类）；⑥ 网站/论坛名（Reddit、官网）；⑦ 没具体产品名的笼统"XX驱动 / XX控制软件"；⑧ 操作系统自带功能（Windows辅助功能、Windows安全中心）。
 
 只输出一个 JSON 对象（每个字段都是数组，一个元素一个标签，没有就给空数组 []），不要任何额外文字、不要 markdown：
 {"应用场景":[],"产品优势":[],"问题反馈":[],"相关软件":[]}
@@ -430,7 +449,9 @@ function splitTags(v){
     seg = seg.trim(); if(!seg) return;
     if(/\s/.test(seg)){
       const parts = seg.split(/\s+/).map(p=>p.trim()).filter(Boolean);
-      if(parts.length>=2 && parts.every(p=> /^[一-鿿]{2,6}$/.test(p))){ parts.forEach(p=> out.push(p)); return; }
+      // V2.9(P-20):每段都"含中文 且 2~8字"才按空格拆——既能拆"价格划算 性能好 体积小"、也能拆"电源键闪烁 风扇高速运转 BIOS未签名 屏幕打乱"这种含英文/长词的多标签串;
+      //   "每段必须含中文"天然不拆 Home Assistant / Plex Media Server / Windows 11(纯英文)、"每段≥2字"不把"做 媒体服务器"拆出单字
+      if(parts.length>=2 && parts.every(p=> /[一-鿿]/.test(p) && p.length>=2 && p.length<=8)){ parts.forEach(p=> out.push(p)); return; }
     }
     out.push(seg);
   });
@@ -774,23 +795,23 @@ const FIELD_CATS = {
     {name:"连接电视/大屏/多屏", desc:"接电视当显示器、电视盒子、接投影、多屏", re:/连接电视|电视|投影|显示器|大屏|多屏|三台显示|外接显示|电视盒|显示$/i},
     {name:"网络/防火墙/路由/监控", desc:"防火墙/路由、VPN、PiHole、视频监控、智能家居、远程", re:/防火墙|路由|vpn|pihole|adguard|网络设备|网络研究|远程连接|远程桌面|远程监控|远程登录|远程呼叫|监控|安防|摄像头|blue iris|智能家居|家庭自动化|家庭助手|网关/i},
     {name:"虚拟机/容器", desc:"跑虚拟机、Docker/LXC容器、虚拟桌面", re:/虚拟机|虚拟桌面|跑虚拟|运行虚拟|docker|lxc|容器|虚拟化/i},
-    {name:"家用/日常/备用机", desc:"家用日常、基础计算、主力机/备用机、客厅电脑", re:/家庭|家用|日常|主力|台式|备用|基本电脑|基础计算|小任务|应用程序|其他任务|新大脑|做所有事|桌面使用|客厅|效率|轻度任务|轻量级多任务|送礼|一体机|连接外置|连接扩展坞|远程使用|门店|过日子/i},
+    {name:"家用/日常/备用机", desc:"家用日常、基础计算、主力机/备用机、客厅电脑", re:/家庭|家用|日常|主力|台式|备用|基本电脑|基础计算|小任务|其他任务|新大脑|做所有事|桌面使用|客厅|轻度任务|轻量级多任务|送礼|一体机|连接外置|连接扩展坞|远程使用|门店|过日子/i},
     {name:"学习/教育", desc:"学习、上学、上网课、作业", re:/学习|上学|上课|课程|作业|学业|教育|大学|论文/i},
     {name:"替换/升级旧机", desc:"替换老旧台式/一体机、过渡换新", re:/替换|替代|过渡|升级系统|老旧|旧电脑|旧台式|旧机/i},
     {name:"便携/旅行/车载", desc:"旅行携带、房车/车载、出差便携", re:/旅行|便携|随身|携带|房车|出差|车内|车载/i},
     {name:"专业/科研/特殊用途", desc:"3D打印/建模、激光雕刻/CNC、无线电、炒股、报税、家谱等小众及其它用途", re:null},
   ],
   "产品优势":[
-    {name:"体积小巧/便携", desc:"机身小、占地少、好携带", re:/体积|小巧|紧凑|迷你|便携|携带|轻便|轻巧|尺寸|重量轻|占地|占用空间|节省空间|桌面空间|不占|小型|小盒/i},
-    {name:"运行速度快/流畅/开机快", desc:"开机/运行/反应快、流畅不卡", re:/速度|运行快|流畅|不卡|反应快|反应迅速|响应|快速|迅速|启动|开机|超级快|超快|秒开|无卡顿|无缓冲|很快|跑得快|快(?![速捷])/i},
+    {name:"体积小巧/便携", desc:"机身小、占地少、好携带", re:/体积|小巧|紧凑|迷你|便携|携带|轻便|轻巧|尺寸|重量轻|占地|占用空间|不占|小型|小盒/i},
     {name:"性价比高/价格划算", desc:"便宜、物超所值、配置划算", re:/性价比|物超所值|物有所值|价格|便宜|划算|实惠|超值|低成本|低价/i},
     {name:"性能强劲", desc:"性能够强、跑得动大任务、AI/游戏性能好", re:/性能|强劲|强大|功能强|够用|够强|算力|跑得动|处理.*应用|功率|能量|全能|多功能|多任务|图形效果|超越|顶级|厉害|强$/i},
     {name:"安静/低噪", desc:"风扇声小、几乎无声", re:/安静|静音|噪音小|噪音低|低噪|无声|声音小|声音低/i},
     {name:"散热好/不发烫/温控", desc:"散热做得好、不烫", re:/散热|温度低|温度控制|不发烫|不热|没有过热|不过热|降温|温控|凉|无风扇/i},
     {name:"好上手/设置简单/易用", desc:"开箱即用、好装好上手", re:/设置|易用|易于使用|好用|简单|上手|开箱即用|安装简|即插即用|配置方便|免维护|易于组装/i},
     {name:"接口/无线/多屏连接丰富", desc:"接口多够用、扩展坞、WiFi6/蓝牙、多屏支持", re:/接口|端口|usb|hdmi|扩展坞|连接性|wifi|wi-fi|蓝牙|无线|网口|双网|多屏|三屏|显示器|多显示|连接/i},
-    {name:"做工/质量/用料好", desc:"做工扎实、用料好、坚固", re:/做工|质量|品质|用料|耐用|坚固|结实|扎实|高级|质感|顶级组件|干净整洁/i},
+    {name:"做工/质量/用料好", desc:"做工扎实、用料好、坚固", re:/做工|质量|品质|用料|耐用|坚固|结实|扎实|高级|质感|精良|制作精|顶级组件|干净整洁/i},
     {name:"内存/存储大/可升级", desc:"内存存储够大、能自己加", re:/内存|存储|硬盘|ssd|容量|升级|可扩展|扩展性|插槽/i},
+    {name:"运行速度快/流畅/开机快", desc:"开机/运行/反应快、流畅不卡", re:/速度|运行快|流畅|不卡|反应快|反应迅速|响应|快速|迅速|启动|开机|超级快|超快|秒开|无卡顿|无缓冲|很快|跑得快|快(?![速捷])/i},
     {name:"稳定/可靠", desc:"长期运行稳、可靠", re:/稳定|可靠|靠谱|耐操|兼容性好/i},
     {name:"外观/设计好看", desc:"外观漂亮、灯效、造型", re:/外观|漂亮|时尚|颜值|好看|设计|灯效|灯光|led|rgb|造型|酷|可爱|中国风/i},
     {name:"低功耗/省电/能效", desc:"功耗低、省电费", re:/功耗|省电|耗电|节能|节电|能效|能耗/i},
@@ -799,22 +820,23 @@ const FIELD_CATS = {
   ],
   "问题反馈":[
     {name:"风扇/噪音问题", desc:"风扇太吵、风扇故障/效率低", re:/风扇|噪音|咔哒|吵|响|蜂鸣|嗡嗡/},
-    {name:"散热差/发烫", desc:"散热不行、运行发烫、温度高、导热膏差", re:/散热|过热|发热|温度|运行热|烫|导热膏|节流|热降频/},
+    {name:"散热差/发烫", desc:"散热不行、运行发烫、温度高、导热膏差", re:/散热|过热|发热|温度|运行热|烫|导热膏|热节流|热降频|降频/},
     {name:"无线连接(Wi-Fi/蓝牙)差", desc:"Wi-Fi/蓝牙 连不上、慢、老断", re:/wi-?fi|wifi|网络|以太网|断网|联网|网卡|蓝牙|局域网唤醒|信号弱|信号差|信号/i},
     {name:"显卡弱/崩", desc:"显卡性能弱、显存限制、帧数低、显卡崩", re:/显卡|gpu|显存|vram|帧数|帧率/i},
-    {name:"性能差/卡顿/运行慢", desc:"跑得慢、卡顿掉帧、没响应、带不动游戏、等待久", re:/性能|运行慢|缓慢|速度慢|速度下降|变慢|慢$|卡顿|卡帧|跳帧|无响应|掉帧|迟钝|延迟|等待时间|时间长|效率低|带不动|加载不了|运行不了|玩不了|复制.*卡|启动慢|文件卡|文件名|下载.*慢|不适合.*游戏|无法运行.*游戏|高强度游戏|现代游戏|芯片功能|资源.*程序/i},
+    {name:"性能差/卡顿/运行慢", desc:"跑得慢、卡顿掉帧、没响应、带不动游戏、等待久", re:/性能|运行慢|缓慢|速度慢|速度下降|变慢|反应慢|响应慢|加载慢|读取慢|卡顿|卡帧|跳帧|无响应|掉帧|迟钝|输入延迟|响应延迟|延迟高|高延迟|等待时间|时间长|效率低|带不动|加载不了|运行不了|玩不了|复制.*卡|启动慢|文件卡|文件名|下载.*慢|不适合.*游戏|无法运行.*游戏|高强度游戏|现代游戏|芯片功能|资源.*程序/i},
     {name:"开不了机/变砖", desc:"无法开机/启动、卡启动菜单、用着变砖", re:/无法开机|开不了机|无法启动|开机|变砖|无法使用|彻底关机|启动问题|启动菜单|启动不稳|进不去|启动固件|启动卡|nx模式/i},
     {name:"死机/崩溃/重启", desc:"运行中死机、蓝屏崩溃、随机重启", re:/死机|崩溃|重启|自动关机|关机|卡死|蓝屏/},
     {name:"存储(内存/硬盘/SSD)", desc:"内存太小/焊死、硬盘慢/坏、无法升级", re:/内存|硬盘|固态|ssd|nvme|m\.2|存储|无法升级|不能升级/i},
+    {name:"数据丢失/数据安全", desc:"数据丢失、资料损坏、丢文件", re:/数据丢失|丢数据|数据损坏|资料丢失|丢失文件|文件丢失|数据安全/},
     {name:"接口不够/位置烂/坏", desc:"USB/HDMI 不够、位置差、接口坏", re:/接口|usb|hdmi|端口|dp接口|displayport|雷电|thunderbolt|oculink|扩展坞|sata|背面也需要/i},
     {name:"屏幕/显示/视频输出", desc:"黑屏花屏、分辨率/输出/断连、指示灯", re:/屏幕|显示|视频|分辨率|黑屏|雪花|彩色|画面|输出|指示灯/},
     {name:"音频/扬声器", desc:"没扬声器、声音故障、电流声", re:/音频|声音|扬声器|声卡|无音频|静电|电流声|杂音/},
     {name:"电源/适配器/电池", desc:"电源故障、适配器大/坏", re:/电源|适配器|电池/},
-    {name:"系统/驱动/更新/BIOS/兼容", desc:"系统不稳、驱动难装、更新失败、BIOS/激活/兼容/休眠", re:/系统|windows|win ?11|驱动|更新|bios|激活|密钥|密码|登录|账户|pin|镜像|操作系统|安装|重装|sid|兼容|休眠|睡眠|软件问题|搜索栏|配置文件|广告软件|强制设置|需要.*配置|升级复杂/i},
+    {name:"系统/驱动/更新/BIOS/兼容", desc:"系统不稳、驱动难装、更新失败、BIOS/激活/兼容/休眠/刷机/重置", re:/系统|windows|win ?11|驱动|更新|bios|激活|密钥|密码|登录|账户|pin|镜像|操作系统|安装|重装|sid|兼容|休眠|睡眠|刷机|重置|唤醒|uefi|软件问题|搜索栏|配置文件|广告软件|强制设置|需要.*配置|升级复杂/i},
     {name:"鼠标/键盘/外设", desc:"鼠标键盘失灵、外设连接问题", re:/鼠标|键盘|外设|触摸|手柄/},
     {name:"预装恶意软件/垃圾", desc:"预装恶意/间谍软件、病毒", re:/恶意|间谍|病毒|预装/},
     {name:"包装/物流/发货", desc:"包装破损、发货少件、快递差", re:/包装|快递|发货|订单|物流|外包装|数量|收到/},
-    {name:"售后/客服/支持差", desc:"售后/客服/技术支持差、退换难", re:/售后|客服|客户服务|客户支持|技术支持|无法获得支持|无人接听|无人理|退换|退货/},
+    {name:"售后/客服/支持差", desc:"售后/客服/技术支持差、退换难、保修/停产", re:/售后|客服|客户服务|客户支持|技术支持|无法获得支持|无人接听|无人理|退换|退货|退款|保修|质保|停产|维修/},
     {name:"价格贵/性价比低", desc:"嫌贵、涨价、不划算", re:/性价比低|价格|涨价|贵/},
     {name:"缺配件/说明书差", desc:"没光驱、说明书看不清、线短", re:/光驱|说明书|文档|配件|线缆|附带|找不到/},
     {name:"硬件故障/容易坏", desc:"开箱即坏、用没多久坏、彻底坏、报废、缺陷、做工差", re:/开箱即坏|彻底坏|坏了|坏掉|损坏|报废|烧毁|烧坏|罢工|变质|寿命短|不耐用|有缺陷|缺陷|质量控制|做工差|做工差劲|设备故障|硬件故障|硬件问题|一年.*坏|几个月.*坏|用.{0,4}就坏/i},
@@ -852,8 +874,10 @@ async function buildSceneSummary(key, resultData, sceneTable){
   const bump=(m,v)=> String(v||"").split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && x!=="《》").forEach(t=> m[t]=(m[t]||0)+1);
   models.forEach(sn=> (resultData[sn].details||[]).forEach(d=>{ totalReviews++; bump(gAdv,d["产品优势"]); bump(gProb,d["问题反馈"]); }));
   const top = sceneTable.slice(0, 8);
+  const totalSceneF = sceneTable.reduce((s,x)=> s+(x.频次||0), 0) || 1;   // P-08:占比用1位小数,避免 42 vs 41 都四舍五入成20%却分"第一/第二"
   const digest = top.map((r,i)=>{ const p = sceneProfile(resultData, r.大类, gAdv, gProb, totalReviews);
-    return `${i+1}. 场景【${r.大类}】 约占 ${r.占比}%（${r.频次}次）
+    const isCatchall = /专业\/科研|特殊用途/.test(r.大类);   // P-17:兜底长尾合集,别给它编统一方案
+    return `${i+1}. 场景【${r.大类}】 约占 ${(r.频次/totalSceneF*100).toFixed(1)}%（${r.频次}次）${isCatchall?"  ★【长尾合集类·非单一用途】:正文里别给它编统一需求方案,改为列举它内部2-3个最高频的真实子用途":""}
    该场景【相对突出】的优点：${p.adv.join("、")||"（无）"}
    该场景【相对突出】的问题：${p.prob.join("、")||"（无）"}
    涉及软件：${p.sw.join("、")||"（无）"}
@@ -870,7 +894,7 @@ async function buildSceneSummary(key, resultData, sceneTable){
 二、第二个场景……（往下覆盖给你的主要场景）
 结尾一句：占比较低的长尾场景，后续深入挖掘作为储备差异化方向。
 
-【硬性铁律】①每条先点出【一个具体的真实需求/痛点】（从该场景的突出优点/问题或评论摘录里提炼，要像"需要更多USB接口""4K视频卡顿""蓝牙老断连"这样具体），再给一个【具体可落地】的方案。②【严禁】只把"体积小巧""性价比高""运行速度快"这种通用优点照搬当需求；【严禁】"搭载高性能处理器""优化散热设计"这种放之四海皆准的空话。③【不同场景的需求要各有侧重、不许每段都一样】——优先用该场景区别于其它场景的突出点。④每条只写一个需求、不要顿号堆多个；只能用我给的该场景数据/摘录、不许编造；百分比用我给的数字；格式"序号. 需求 —— 方案"，不要"用户需求：""解决方案："前缀。
+【硬性铁律】①每条先点出【一个具体的真实需求/痛点】（从该场景的突出优点/问题或评论摘录里提炼，要像"需要更多USB接口""4K视频卡顿""蓝牙老断连"这样具体），再给一个【具体可落地】的方案。②【需求侧严禁】把"体积小巧""性价比高""运行速度快"这种通用优点照搬当需求。③【方案侧严禁空壳】——方案必须落到一个【具体可改的硬件/接口/BIOS/配置点】（如"增加第二个M.2插槽""开放BIOS风扇曲线""换更厚均热板""支持OCuLink外接显卡"）；【绝不许】写"优化散热设计""优化散热系统""搭载高性能处理器""提升多任务能力""增强整体性能"这类动词+名词的空壳；若你只想得出这种空话，就回到该场景评论摘录里挑一个具体诉求重写。④【各场景不许雷同】：后面场景若需求和前面某段重复（如都写"NPU加速/外接GPU"），必须换该场景摘录里【独有】的诉求，实在没有就少写一条，绝不重复。⑤【遇到标了★长尾合集类的场景】：不要编统一需求方案，改成"该场景是…等小众用途的合集，主要包括：<列2-3个真实子用途>"。⑥每条只写一个需求、不要顿号堆多个；只能用我给的该场景数据/摘录、不许编造；百分比用我给的数字；格式"序号. 需求 —— 方案"，不要"用户需求：""解决方案："前缀。
 
 【各场景数据】（按占比从高到低）：
 ${digest}
@@ -969,10 +993,14 @@ async function reclassifyCatchall(key, table, fieldName){
     const prompt = `下面这些"${fieldName}"标签都被归进了"${defName}"(兜底笼统类)。请把每个标签【按真实意思】归到下面某个【具体类目】;
 如果有一簇标签讲的是清单里【没有】的概念(比如 显卡/指纹/数据丢失/接口松动…),你可以【新建一个类目】,类目名【必须逐字照抄这簇里次数最高的那个真实标签】(如"显卡好""指纹失灵"),绝不许自己另造词;
 如果确实笼统、没说具体(不错/好电脑/推荐/很棒/表现好),就标"保留"。
-【可选类目】(逐字照抄【完整】类目名,不许只写一个字):
+【可选类目】(下面每个类目前有编号,归到哪个就回哪个【数字编号】,不用抄类目名):
 ${targets.map((t,i)=> (i+1)+". "+t).join("\n")}
 
-输出【纯文本】,每行一个:标签 => 类目名(清单里的、或你新建的真实标签名、或 保留)。不要解释、不要JSON。
+输出【纯文本】,每行一个:
+　· 归到上面某个类目 → 写"标签 => 编号数字"(如 风扇响 => 1);
+　· 清单里没有合适类目、但有一簇同概念标签 → 新建类目:写"标签 => 新类目名"(逐字照抄某个真实标签如"显卡好");
+　· 确实笼统说不清 → 写"标签 => 保留"。${fieldName==="问题反馈" ? '\n　· 这条其实是【优点/根本不是问题】(如 画质好、运行流畅、外观漂亮误入了问题表) → 写"标签 => 非问题"。' : ''}
+不要解释、不要JSON。
 标签清单:
 ${listed}`;
     let out = ""; try{ out = String(await callAI(key, prompt, 120000, 3072)||""); }catch(e){ return null; }
@@ -982,8 +1010,12 @@ ${listed}`;
       if(m.length < 2) return;
       const tag = m[0].replace(/[（(]\s*\d+\s*[）)]/g,"").replace(/[「」『』\[\]【】、,，\d.\s]/g,"").trim();
       if(!valid.has(tag)) return;
-      const rawTgt = m.slice(1).join("");
-      let tgt = findTargetExisting(rawTgt), isNew = false;          // 先归现有类目
+      const rawTgt = m.slice(1).join("").trim();
+      if(/^非问题$/.test(clean(rawTgt))){ mv.push([tag,"__DROP__",false]); return; }   // P-21:误入问题表的好评 → 标记删除
+      let tgt = null, isNew = false;
+      const numM = rawTgt.match(/^[第#]?\s*(\d{1,2})\s*[.。、)）]?$/);          // P-05:整串就是一个序号 → 按编号映射(比逐字抄长类目名稳得多)
+      if(numM){ const idx = +numM[1]-1; if(idx>=0 && idx<targets.length) tgt = targets[idx]; }
+      if(!tgt) tgt = findTargetExisting(rawTgt);                                  // 退回按类目名(精确/唯一子串)
       if(!tgt){ const c = clean(rawTgt); if(allTags.has(c) && c!==tag){ tgt = c; isNew = true; } }  // 否则:新建类目(名字必须=某真实标签,且不是它自己)
       if(tgt) mv.push([tag, tgt, isNew]);
     });
@@ -1000,7 +1032,9 @@ ${listed}`;
   const byName = new Map(table.map(r=> [r.大类, r]));
   const descOf = {}; cats.forEach(c=> descOf[c.name]=c.desc);
   const remain = [];
+  let dropped = 0;
   catchall.细分.forEach(([tag,c])=>{ const tgt = moveTo.get(tag);
+    if(tgt==="__DROP__"){ dropped++; return; }   // P-21:误入问题表的好评,删掉不计入
     if(tgt){
       if(!byName.has(tgt)){ const row={大类:tgt, 描述:descOf[tgt]||(newCats.has(tgt)?"(从评论里归出的具体类)":""), 频次:0, 占比:0, 细分:[]}; table.push(row); byName.set(tgt,row); }
       byName.get(tgt).细分.push([tag,c]);
@@ -1038,11 +1072,11 @@ const SOFTWARE_CATS = [
   {name:"虚拟化/容器", re:/proxmox|vmware|virtual ?box|\bkvm\b|hyper-?v|\bxen\b|docker|portainer|\blxc\b|kubernetes|容器|虚拟机|虚拟化/i},
   {name:"媒体服务器", re:/plex|jellyfin|emby|kodi|媒体服务器|媒体中心/i},
   {name:"流媒体/影音", re:/youtube|netflix|spotify|disney|hulu|prime video|twitch|itunes|\bvlc\b|\bobs\b|pluto tv|virtual dj|geforce now|plex|流媒体|影音|媒体播放|视频播放/i},
-  {name:"游戏", re:/steam|minecraft|我的世界|roblox|fortnite|堡垒之夜|魔兽|world of warcraft|\bcod\b|csgo|cs2|反恐精英|使命召唤|\bgta\b|模拟人生|the sims|valorant|palworld|starfield|warframe|warzone|战地|battlefield|forza|地平线|博德之门|上古卷轴|skyrim|孤岛惊魂|城市天际线|英雄联盟|league of legends|\bdota\b|cyberpunk|赛博朋克|elden|艾尔登|witcher|巫师|days to die|stardew|terraria|泰拉瑞亚|factorio|rimworld|halo|光环|\bdoom\b|赛车|racing|xbox|game ?pass|batocera|unigine|emulationstation|retroarch|redream|dreamcast|宿敌|schedule 1|天国|epic|《.+》|游戏/i},
+  {name:"游戏", re:/steam|minecraft|我的世界|roblox|fortnite|堡垒之夜|魔兽|world of warcraft|\bcod\b|csgo|cs2|反恐精英|使命召唤|\bgta\b|模拟人生|the sims|valorant|palworld|starfield|warframe|warzone|战地|battlefield|forza|地平线|博德之门|上古卷轴|skyrim|孤岛惊魂|城市天际线|英雄联盟|league of legends|\bdota\b|cyberpunk|赛博朋克|elden|艾尔登|witcher|巫师|days to die|stardew|terraria|泰拉瑞亚|factorio|rimworld|\bhalo\b|光环|\bdoom\b|赛车|racing|\bxbox\b|game ?pass|batocera|unigine|emulationstation|retroarch|redream|dreamcast|宿敌|schedule 1|天国|epic|微软飞行模拟|flight ?simulator|铁拳|tekken|对马|ghost of tsushima|蜘蛛侠|spider-?man|地狱潜行者|helldivers|\bpcsx\b|《.+》|游戏/i},
   {name:"办公/协作", re:/\boffice\b|word|excel|powerpoint|microsoft 365|m365|outlook|teams|zoom|discord|slack|libre ?office|open ?office|google|gmail|quickbooks|quicken|\bwps\b|onenote|notion|onedrive|thunderbird|whatsapp|telegram|邮件|财务|办公软件|生产力软件/i},
   {name:"音乐/音频", re:/ableton|fl studio|audacity|reaper|cubase|logic pro|studio one|presonus|fxsound|音乐|音频|录音|\bdaw\b/i},
-  {name:"图形/设计", re:/photoshop|\bps\b|illustrator|lightroom|gimp|adobe|affinity|premiere|after effects|davinci|blender|autocad|freecad|solidworks|moldflow|fusion 360|clip studio|inkscape|figma|canva|capcut|剪映|hitfilm|pix4d|3d slicer|3d打印|图形|设计|绘图|\bcad\b/i},
-  {name:"AI/大模型工具", re:/lm studio|llama|mistral|deepseek|comfyui|ollama|stable diffusion|midjourney|openai|chatgpt|\bgpt\b|claude|gemini|whisper|tensorflow|pytorch|openclaw|open webui|\bqwen\b|\brocm\b|kobold|oobabooga|invokeai|fooocus|automatic1111|大模型|ai模型|\bllm\b|本地模型/i},
+  {name:"图形/设计", re:/photoshop|\bps\b|illustrator|lightroom|gimp|adobe|affinity|premiere|after effects|davinci|达芬奇|blender|autocad|freecad|solidworks|moldflow|fusion 360|clip studio|inkscape|figma|canva|capcut|剪映|hitfilm|pix4d|3d slicer|3d打印|图形|设计|绘图|\bcad\b/i},
+  {name:"AI/大模型工具", re:/lm ?studio|lmstudio|lm工作室|llama|mistral|deepseek|comfyui|ollama|stable diffusion|midjourney|openai|chatgpt|\bgpt\b|gpt-?oss|gemma|claude|gemini|whisper|tensorflow|pytorch|openclaw|open webui|\bqwen\b|\brocm\b|kobold|oobabooga|invokeai|fooocus|automatic1111|大模型|ai模型|\bllm\b|本地模型/i},
   {name:"网络/安全/服务器", re:/opnsense|pfsense|pi-?hole|adguard|wireguard|openvpn|\bvpn\b|frigate|blue iris|home ?assistant|node-?red|samba|\bnas\b|nginx|apache|防火墙|网络监控|extrahop|intune|wazuh|bitdefender|mcafee|norton|kaspersky|malwarebytes|杀毒|防病毒|antivirus|\beset\b|3cx|voip|安全/i},
   {name:"开发/测试工具", re:/vs ?code|visual studio|python|node ?js|\bnode\b|\bgit\b|github|jenkins|powershell|jupyter|\bgis\b|matlab|r studio|开发|编译|produkey|nirsoft|cpu-?z|time spy|3dmark|crystaldisk|hwinfo|getfancontrol|跑分|压力测试|测试软件/i},
   {name:"浏览器", re:/chrome|firefox|edge|brave|safari|opera|duckduckgo|vivaldi|浏览器/i},
@@ -1091,15 +1125,49 @@ const SOFTWARE_DESC = [
   [/chrome|firefox|edge|brave|safari|opera|duckduckgo/i, "网页浏览器"],
   [/time spy|3dmark|cpu-?z|crystaldisk|hwinfo|getfancontrol|unigine/i, "硬件跑分/检测/调控工具"],
   [/produkey|rufus|macrium|nirsoft/i, "系统实用工具(密钥查看/启动盘/备份等)"],
+  [/^bios$/i, "主板固件设置界面,用于调风扇曲线/启动项/虚拟化开关等"],
+  [/\bvlc\b/i, "开源全能播放器,本地音视频播放"],
+  [/vs ?code|visual studio code/i, "微软轻量代码编辑器,用于编程开发"],
+  [/\brocm\b/i, "AMD GPU 计算平台,用于跑本地 AI/大模型"],
+  [/\bobs\b/i, "开源录屏/直播推流软件"],
+  [/jupyter/i, "交互式笔记本,用于数据分析/AI 开发"],
 ];
 const softwareDesc = name=>{ const hit = SOFTWARE_DESC.find(d=> d[0].test(name)); return hit ? hit[1] : ""; };
-/* V1.9:软件提及统计 —— 固定规则归类 + 固定功能描述,代码数次数,【不调 AI、每次结果一样】。返回 [{类别,名称,次数,占比,描述}] 按类别分组、组内降序。 */
+/* V2.9:软件名【确定性归并】(P-02)——大小写/空格/版本号形态归一,同一软件并成一行;不调AI、不写同义词表,只是同一字符串的形态归一。 */
+function normSwKey(name){
+  let k = String(name).toLowerCase().trim().replace(/[\s_]+/g,"");
+  k = k.replace(/^win(?=(\d|pro|home))/,"windows");          // Win11/Win Pro → windows…(和 Windows 11 并一组)
+  if(!/^windows/.test(k)) k = k.replace(/v?\d+(\.\d+)*$/,""); // 去尾部纯版本号(ubuntu24→ubuntu、llama3.3→llama);windows的整数是名字一部分,保留
+  return k || String(name).toLowerCase();
+}
+/* V2.9:确定性剔除"明确不是软件"的(P-03,用户定:清非软件、保留BIOS)——只覆盖提取prompt已明列的8类,不猜、不扩同义词表。 */
+function isNonSoftware(name){
+  const n = String(name).trim();
+  if(/^bios$/i.test(n)) return false;   // BIOS 保留(用户拍板)
+  return /^(bitlocker|windows ?hello|windows ?defender|defender|microsoft ?copilot|copilot|windows ?安全(中心)?|安全中心|windows ?辅助功能|辅助功能|powertoys?)$/i.test(n)   // 系统自带功能
+    || /(驱动程序|驱动|芯片组|控制中心|adrenalin)$/.test(n)                                       // 笼统驱动/控制软件
+    || /^(amd|intel|英特尔|nvidia|英伟达)\s*(软件|驱动|芯片组?|助手)?$/i.test(n)                   // 厂商笼统软件/驱动
+    || /^(cuda|vulkan|directml|directx|opengl|opencl|directstorage|\.net|net ?framework)$/i.test(n) // 图形/计算API/运行库
+    || /(oculink|^dock$|扩展坞|^hdmi$|displayport|^usb.?$|type-?c|雷电|thunderbolt|kvm|coral|树莓派|raspberry ?pi$)/i.test(n)  // 硬件接口/配件
+    || /^(geekom|nucbox|minisforum|beelink|gmktec|aoostar|trigkey|strix ?halo|strixhalo|ryzen|radeon|核显|集显)/i.test(n);     // 机型/品牌/CPU/GPU型号
+}
+/* V1.9/V2.9:软件提及统计——确定性归类+固定描述+【先剔非软件、再归并去重】,不调AI、每次一样。返回 [{类别,名称,次数,占比,描述}]。 */
 function buildSoftwareStats(resultData){
-  const sw = aggregateAcross(resultData, "相关软件");   // [[名称,次数],...] 已按次数降序
+  let sw = aggregateAcross(resultData, "相关软件");   // [[名称,次数],...]
   if(!sw.length) return [];
-  const total = sw.reduce((s,a)=> s+a[1], 0);
+  sw = sw.filter(a=> !isNonSoftware(a[0]));            // P-03:剔非软件(留BIOS)
+  if(!sw.length) return [];
+  // P-02:按归一化 key 归并,次数相加,显示用组内最高频原写法(并列取更短的)
+  const groups = new Map();
+  sw.forEach(([name,c])=>{ const k=normSwKey(name); if(!groups.has(k)) groups.set(k,{disp:new Map(), total:0});
+    const g=groups.get(k); g.disp.set(name,(g.disp.get(name)||0)+c); g.total+=c; });
+  const merged = [...groups.values()].map(g=>{
+    let best=null,bn=-1; g.disp.forEach((n,name)=>{ if(n>bn || (n===bn && name.length<best.length)){ best=name; bn=n; } });
+    return [best, g.total];
+  }).sort((a,b)=> b[1]-a[1]);
+  const total = merged.reduce((s,a)=> s+a[1], 0);
   const catOf = name=>{ const hit = SOFTWARE_CATS.find(c=> c.re.test(name)); return hit ? hit.name : "工具/实用程序"; };
-  const rows = sw.map(a=> ({ 类别: catOf(a[0]), 名称: a[0], 次数: a[1], 占比: Math.round(a[1]/total*100), 描述: softwareDesc(a[0]) }));
+  const rows = merged.map(a=> ({ 类别: catOf(a[0]), 名称: a[0], 次数: a[1], 占比: Math.round(a[1]/total*100), 描述: softwareDesc(a[0])||"—" }));  // P-13:空描述填"—"
   const catMax = {}; rows.forEach(r=> catMax[r.类别] = Math.max(catMax[r.类别]||0, r.次数));
   rows.sort((a,b)=> (catMax[b.类别]-catMax[a.类别]) || (b.次数-a.次数) || String(a.名称).localeCompare(String(b.名称)));
   return rows;
@@ -1139,7 +1207,7 @@ $("downloadBtn").onclick = async ()=>{
           row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
           row.getCell(2).alignment={vertical:"middle",wrapText:true};
           row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
-          row.getCell(4).alignment={horizontal:"center",vertical:"middle"}; row.getCell(4).numFmt="0%";
+          row.getCell(4).alignment={horizontal:"center",vertical:"middle"}; row.getCell(4).numFmt="0.0%";  // P-12:分母大、1次≈0.2%,保留1位小数才看得见
         });
         const end = ws.rowCount;
         if(end > start) ws.mergeCells(start,1,end,1);
@@ -1147,7 +1215,7 @@ $("downloadBtn").onclick = async ()=>{
         ws.getCell(start,1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
       });
       const dataLast = ws.rowCount;
-      try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"min"},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
     };
     // 1. 应用场景总结(文字:占比 + 需求→解决方案;左侧蓝标签)
     if(resultSceneSummary){
@@ -1166,7 +1234,7 @@ $("downloadBtn").onclick = async ()=>{
       const totalScene = resultSceneTable.reduce((s,r)=> s + (r.频次||0), 0) || 1;   // V2.7:占比用真小数(频次/总和)+百分比格式
       resultSceneTable.forEach(r=>{ const row=ws.addRow([r.大类, r.频次, r.频次/totalScene,"",""]); row.getCell(1).alignment={vertical:"middle",wrapText:true}; row.getCell(2).alignment={horizontal:"center"}; row.getCell(3).alignment={horizontal:"center"}; row.getCell(3).numFmt="0%"; });
       const last = ws.rowCount;
-      try{ ws.addConditionalFormatting({ ref:`B${first}:B${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"min"},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      try{ ws.addConditionalFormatting({ ref:`B${first}:B${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
     }
     // 3. 产品优势 / 问题反馈汇总(两层:大类 → 细分 → 次数)
     catSection("产品优势汇总", ["产品优势类目","产品优势明细","次数","占比"], resultAdvTable);
@@ -1182,7 +1250,7 @@ $("downloadBtn").onclick = async ()=>{
       const last = ws.rowCount;
       let rr=first;
       while(rr<=last){ const cat=ws.getCell(rr,1).value; let e=rr; while(e+1<=last && ws.getCell(e+1,1).value===cat) e++; if(e>rr) ws.mergeCells(rr,1,e,1); ws.getCell(rr,1).alignment={horizontal:"center",vertical:"middle"}; rr=e+1; }
-      try{ ws.addConditionalFormatting({ ref:`C${first}:C${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"min"},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      try{ ws.addConditionalFormatting({ ref:`C${first}:C${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
     }
   }
   Object.keys(resultData).forEach(name=>{
