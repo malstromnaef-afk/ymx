@@ -83,7 +83,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V3.2</span></h1>
+    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V3.7 智谱</span></h1>
     <div class="sub">重新提取四字段 → 「总结」表(可勾选):应用场景总结(逐场景挖具体需求)+饼图数据·产品优势/问题反馈两层汇总·软件统计(带描述)</div>
   </header>
 
@@ -106,7 +106,7 @@
         </select>
       </div>
     </div>
-    <div class="hint">没有 Key？去 <a href="https://www.bigmodel.cn/usercenter/proj-mgmt/apikeys" target="_blank">智谱开放平台</a> 免费申请（中国大陆手机号可注册）。Key 仅保存在你本机浏览器，不会发送到任何第三方。模型可随时切换（glm-4.5/4.6 系列会自动关闭深度思考以提速省 token）。</div>
+    <div class="hint">没有 Key？去 <a href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank">智谱 BigModel</a> 申请（中国大陆手机号可注册，有免费额度）。Key 仅保存在你本机浏览器，不会发送到任何第三方。<b>聚类/提取质量主要看模型——默认 glm-4.6v，卡顿不准可换 glm-4.5-air。</b></div>
     <div class="key-saved" id="keySaved">✓ Key 已保存到本地</div>
   </div>
 
@@ -152,10 +152,12 @@
 <div class="toast" id="toast"></div>
 
 <script>
-const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-function getModel(){ return ($("modelSel") && $("modelSel").value.trim()) || "glm-4.6v"; } // 模型从界面下拉框选,默认 glm-4.6v(有免费额度);glm-4.5/4.6 系列自动关"深度思考"→约1.2秒/条
+const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";   // V3.7:换回智谱 GLM(3.5及之前都是智谱)。callAI 对 glm-4.5/4.6 自动关深度思考
+function getModel(){ return ($("modelSel") && $("modelSel").value.trim()) || "glm-4.6v"; } // 默认 glm-4.6v(智谱推荐)
 const $ = id => document.getElementById(id);
 let rawWorkbook = null, resultData = null, resultSceneSummary = "", resultSceneTable = [], resultSoftwareStats = [];   // V1.1:应用场景总结/汇总 + 软件提及统计
+let resultTopBlocks = null;   // V3.3:总结页4大类(应用场景/产品优势/问题反馈/相关软件)直接读每个产品表【表头那行汇总】跨表加总的结果
+let resultTopGroups = null;   // V3.4:4大类经【语义聚类管线】(序号制+代码兜底)后的分组 {big,sub,members:[[名,次]],count}[]
 let resultAdvTable = [], resultProbTable = [];   // V1.4:产品优势汇总 / 问题反馈汇总(纯计数)
 
 /* ---------- 并发与重试(提速:多条评论同时分析,智谱限速由重试兜底) ---------- */
@@ -182,21 +184,21 @@ async function mapPool(items, limit, worker){
 
 /* ---------- API Key 本地存储 ---------- */
 (function initKey(){
-  const k = localStorage.getItem("zhipu_key");
+  const k = localStorage.getItem("sf_key");
   if(k){ $("apiKey").value = k; $("keySaved").style.display="block"; }
 })();
 $("saveKey").onclick = ()=>{
   const k = $("apiKey").value.trim();
   if(!k){ toast("请先填写 Key"); return; }
-  localStorage.setItem("zhipu_key", k);
+  localStorage.setItem("sf_key", k);
   $("keySaved").style.display="block";
   toast("Key 已保存");
 };
 (function initModel(){   // 记住上次选的模型,切换时存本地
   const sel = $("modelSel"); if(!sel) return;
-  const m = localStorage.getItem("zhipu_model");
+  const m = localStorage.getItem("sf_model");
   if(m && [...sel.options].some(o=> o.value===m)) sel.value = m;
-  sel.onchange = ()=>{ localStorage.setItem("zhipu_model", sel.value); toast("分析模型已切换为 "+sel.value); };
+  sel.onchange = ()=>{ localStorage.setItem("sf_model", sel.value); toast("分析模型已切换为 "+sel.value); };
 })();
 
 /* ---------- 文件上传 ---------- */
@@ -315,10 +317,10 @@ function readReviewColumn(ws){
   return reviews;
 }
 
-/* ---------- 调用智谱 API ---------- */
+/* ---------- 调用 AI API(硅基流动 / OpenAI 兼容) ---------- */
 async function callAI(key, prompt, timeoutMs, maxTokens, _attempt){
   _attempt = _attempt || 1;
-  const MODEL = getModel();   // 当前界面下拉框选的模型(默认 glm-4.6v)
+  const MODEL = getModel();   // 当前界面下拉框选的模型(默认 DeepSeek-V3)
   timeoutMs = timeoutMs || 60000;   // 默认60秒;跨全部型号的大归并调用(标签很多)可传更长,如 180000
   const ctrl = new AbortController();
   const timer = setTimeout(()=> ctrl.abort(), timeoutMs);   // 超时兜底:防止某次请求卡住不返回,把整个流程卡死
@@ -399,7 +401,11 @@ function verifySoftware(swField, review, text){
 
 /* ---------- 二筛:从(已是中文的)评论里如实提取四个字段 ---------- */
 function buildPrompt(review){
-  return `你是亚马逊迷你电脑评论分析助手。请只依据下面这条评论的真实内容，【完整】提取四个字段——原文提到的每一个都要抽出来，【尤其别漏软件】。
+  return `你是亚马逊迷你电脑评论分析助手。请只依据下面这条评论的真实内容，【完整】提取五个字段——原文提到的每一个都要抽出来，【尤其别漏软件】。
+
+【先读全·后文为准】先把整条评论(含追评/补充/客服后续)读完，在心里判断用户的【最终态度与核心意图】；若有追评或后文反转，【一律以后文最终结论为准】，别被前半段带偏。(核心意图只帮你判断、不必输出)
+【正负隔离】产品优势只收【正面认可】、问题反馈只收【负面/故障/不满】，两边的信息绝不互串。
+【只评本机】只提取对【这台产品本身】的评价；用户顺带提到的【其他型号/别的机器】(对比的旧机、打算下次买的另一款)的属性，【一律不抽】。
 
 【最高铁律：绝不编造】只提取原文真实提到的；没提到就留空 ""。严禁推测、脑补、套模板、凑标准词。
 
@@ -611,7 +617,23 @@ $("startBtn").onclick = async ()=>{
   $("startBtn").disabled=true;
   $("log").innerHTML="";
   resultData = {}; resultSceneSummary = ""; resultSceneTable = []; resultSoftwareStats = [];
+  const startTime = Date.now();
+  let totalUnits = 1;
 
+  // V3.7【自动判断输入类型】:① 有表头汇总 / ② 无表头但明细已打标签 → 都跳过重新提取(纯代码读现成明细);③④ 原始评论 → 逐条 AI 提取
+  const _tb0 = parseTopBlocks(rawWorkbook);
+  const hasTopBlock = _tb0._sheets>0 && (_tb0["应用场景"].length+_tb0["产品优势"].length+_tb0["问题反馈"].length+_tb0["相关软件"].length>0);
+  const _existing = parseExistingDetail(rawWorkbook);             // 纯代码读现成明细(①②有标签明细;③只评论列、④没评论列→读不出标签)
+  const _lf = labeledFraction(_existing);                          // 测量明细带标签比例(识别类型②)
+  const hasLabeledDetail = _lf.total>0 && _lf.frac >= 0.3;         // ≥30%明细行带标签 → 认定"明细已打标签"(类型②);占比照实打日志
+  if(hasTopBlock || hasLabeledDetail){
+    const kind = hasTopBlock ? "① 有表头汇总" : "② 无表头·明细已打标签";
+    logLine(`✓ 检测到【${kind}】→ 跳过重新提取(省大量时间),直接读现成明细 + 聚类(明细带标签比例 ${(_lf.frac*100).toFixed(0)}%)`, "ok");
+    resultData = _existing;
+    const _c = Object.values(resultData).reduce((a,o)=>a+(o.details?o.details.length:0),0);
+    logLine(`读到现成明细:${Object.keys(resultData).length} 个型号、共 ${_c} 条(纯代码、未调 AI)`, Object.keys(resultData).length?"ok":"warn");
+  } else {
+    logLine(`未检测到现成标签(原始评论文件,明细带标签比例 ${(_lf.frac*100).toFixed(0)}%)→ 从评论逐条 AI 提取(较慢)…`, "warn");
   const sheetNames = rawWorkbook.SheetNames;
   // 先清洗所有型号,统计总评论数
   const cleanedAll = {};
@@ -628,8 +650,7 @@ $("startBtn").onclick = async ()=>{
   });
 
   let done = 0, reviewsDone = 0;
-  const totalUnits = totalReviews || 1;                     // V1.7:每条评论=1个提取单位(不再有逐型号AI归并)
-  const startTime = Date.now();
+  totalUnits = totalReviews || 1;                     // V1.7:每条评论=1个提取单位
   for(const sn of sheetNames){
     const item = cleanedAll[sn];
     // V2.2:统一从【评论内容原文】逐条重新提取四字段(评论内容来自:有"评论内容"列就用那列,否则爬虫清洗出来的)
@@ -680,34 +701,23 @@ $("startBtn").onclick = async ()=>{
     resultData[sn] = {details: useDetails, summary};
     logLine(`型号 [${sn}] 重新提取完成 ${useDetails.length} 条`, "ok");
   }
+  }  // end else（仅"无表头汇总"时才走上面这段 AI 提取）
 
   // V1.9:总结表(勾选才生成)。三列大类目+软件=纯代码/固定规则(不调AI);应用场景总结正文调1次AI
   resultSceneSummary = ""; resultSceneTable = []; resultAdvTable = []; resultProbTable = []; resultSoftwareStats = [];
   if($("genSummary") && $("genSummary").checked){
+    // V3.7:总结正文(buildSceneSummary)需要【应用场景】大类表 → 只保留这一个 categorizeField
     resultSceneTable = categorizeField(resultData, "应用场景");
-    resultAdvTable   = categorizeField(resultData, "产品优势");
-    resultProbTable  = categorizeField(resultData, "问题反馈");
-    resultSoftwareStats = buildSoftwareStats(resultData);
-    logLine(`大类目汇总:应用场景 ${resultSceneTable.length} 类、产品优势 ${resultAdvTable.length} 类、问题反馈 ${resultProbTable.length} 类;软件 ${resultSoftwareStats.length} 个(纯代码、无"其他")`, "ok");
-    // V2.6:先把兜底类目(整体好评/质量差)里的明细【逐条意图归到正确类目】,再【类目内部】合并同义明细
-    // V2.7:两个字段【并行】(各改各的 table,无数据竞争),且各自 try——一个字段失败不连累另一个
-    try{
-      setProgress(totalUnits, totalUnits, "兜底项意图归类中…", startTime);
-      logLine("兜底归类:应用场景【只救≥2次的、低于2留未归类用途】;产品优势/问题反馈全送…", "ai");
-      await Promise.all([
-        reclassifyCatchall(key, resultSceneTable, "应用场景", 2).catch(e=> logLine(`应用场景兜底归类失败(${e.message}),保留已完成部分`, "warn")),  // V3.2:救≥2次的(编辑达芬奇→图形/剪辑),count<2留"未归类用途"
-        reclassifyCatchall(key, resultAdvTable, "产品优势").catch(e=> logLine(`产品优势兜底归类失败(${e.message}),保留已完成部分`, "warn")),
-        reclassifyCatchall(key, resultProbTable, "问题反馈").catch(e=> logLine(`问题反馈兜底归类失败(${e.message}),保留已完成部分`, "warn"))
-      ]);
-      setProgress(totalUnits, totalUnits, "明细意图识别合并中…", startTime);
-      logLine("每个类目内部合并同义明细(含应用场景细分;逐类目过 AI、并发)…", "ai");
-      await Promise.all([
-        mergeDetailsByIntent(key, resultSceneTable, "应用场景").catch(e=> logLine(`应用场景细分合并失败(${e.message}),保留已完成部分`, "warn")),  // V3.2:应用场景细分同义合并(未归类用途下的小众也并同义),但【不炸成独立大类、不促成新大类】——它保留为一个大类
-        mergeDetailsByIntent(key, resultAdvTable, "产品优势").catch(e=> logLine(`产品优势同义合并失败(${e.message}),保留已完成部分`, "warn")),
-        mergeDetailsByIntent(key, resultProbTable, "问题反馈").catch(e=> logLine(`问题反馈同义合并失败(${e.message}),保留已完成部分`, "warn"))
-      ]);
-      logLine("意图归类 + 同义明细合并完成", "ok");
-    }catch(err){ logLine(`明细归类/合并阶段异常（${err.message}），保留已完成的部分`, "warn"); }
+    // V3.7【自适应汇总数据源·最关键】:有表头汇总(TOP100系列)→读表头跨表加总;无表头(明细已打标签/AI现场提取)→从明细标签跨产品统计成 [名称,次数]
+    resultTopBlocks = hasTopBlock ? parseTopBlocks(rawWorkbook) : buildTopBlocksFromDetails(resultData);
+    logLine(`总结页4大类数据源:${hasTopBlock?"读产品表表头汇总":"从明细标签跨产品统计"} → 应用场景 ${resultTopBlocks["应用场景"].length}、产品优势 ${resultTopBlocks["产品优势"].length}、问题反馈 ${resultTopBlocks["问题反馈"].length}、相关软件 ${resultTopBlocks["相关软件"].length} 项(${resultTopBlocks._sheets} 个产品表)`, "ok");
+    { const cur=parseFloat(($("pbar").style.width)||"0")||0, w=Math.max(cur,35); $("pbar").style.width=w+"%"; $("ppct").textContent=Math.round(w)+"%"; $("pstat").textContent="汇总页语义聚类中（4 维度并发，大列表约 1–3 分钟，请勿关闭页面）…"; $("peta").textContent=""; }
+    try{ logLine("汇总页【语义聚类】:按使用目的归类(序号制防造词 + 代码兜底防漏重)…", "ai");
+      resultTopGroups = await buildTopGroups(key, resultTopBlocks);   // V3.4:序号制聚类+代码兜底,产出 {big,sub,members,count} 分组
+      const nb = d=> new Set((resultTopGroups[d]||[]).map(g=>g.big)).size;
+      logLine(`聚类完成:应用场景 ${nb("应用场景")}大类/${(resultTopGroups["应用场景"]||[]).length}组、产品优势 ${nb("产品优势")}大类、问题反馈 ${(resultTopGroups["问题反馈"]||[]).length}组、相关软件 ${(resultTopGroups["相关软件"]||[]).length}组`, "ok");
+    }catch(e){ logLine(`聚类失败(${e.message}),汇总退回原始加总`, "warn"); resultTopGroups = null; }
+    // V3.7:已砍掉 reclassifyCatchall / mergeDetailsByIntent / 产品优势·问题反馈的 categorizeField + buildSoftwareStats —— 导出4大类(产品优势/问题反馈/软件)自 V3.4 起全部来自上面的语义聚类 resultTopGroups,这些是不再被消费的【废 AI 步骤】,白白浪费几十次 AI 调用。
     try{
       setProgress(totalUnits, totalUnits, "生成应用场景总结…", startTime);
       logLine("生成「应用场景总结」正文(1 次 AI)…", "ai");
@@ -1213,12 +1223,198 @@ function buildSoftwareStats(resultData){
   return rows;
 }
 
+/* V3.3:解析一条表头项 "名称（N次）" / "名称（N）" / "名称"(无计数=1) → [名称,次数] */
+function parseTBItem(s){
+  s=String(s).trim().replace(/[""“”]/g,""); if(!s) return null;
+  const m=s.match(/^(.*?)\s*[（(]\s*(\d+)\s*次?\s*[）)]/);
+  if(m){ const n=m[1].trim(); return n?[n,+m[2]]:null; }
+  s=s.replace(/[（(].*$/,"").trim();   // 没有括号计数 → 整个是名字、次数算1
+  return s?[s,1]:null;
+}
+/* V3.3:读每个产品表【表头那行汇总】(应用场景：/产品优势：/问题反馈：/相关软件：),跨表把同名次数加起来。纯代码、不调AI。 */
+function parseTopBlocks(wb){
+  const DIMS=["应用场景","产品优势","问题反馈","相关软件"];
+  const agg={}; DIMS.forEach(d=>agg[d]=new Map()); let sheets=0;
+  wb.SheetNames.forEach(sn=>{
+    if(/^总结$|^summary$|^sheet ?2$/i.test(sn)) return;
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:null});
+    let used=false;
+    for(let i=0;i<rows.length;i++){
+      const cells=(rows[i]||[]).map(x=>x==null?"":String(x).trim());
+      if(cells.some(c=>/^评论内容$|^评论来源$/.test(c))) break;   // 到明细表头就停
+      cells.forEach(cell=>{ const m=cell.match(/^(应用场景|产品优势|问题反馈|相关软件)\s*[：:]\s*([\s\S]+)$/);
+        if(m){ used=true; const dim=m[1]; m[2].split(/、|，|,|;|；|\r?\n/).forEach(it=>{ const p=parseTBItem(it); if(p) agg[dim].set(p[0],(agg[dim].get(p[0])||0)+p[1]); }); }
+      });
+    }
+    if(used) sheets++;
+  });
+  const res={_sheets:sheets}; DIMS.forEach(d=> res[d]=[...agg[d].entries()].sort((a,b)=>b[1]-a[1]));
+  return res;
+}
+/* V3.7:文件【明细列已有标签】时(评论内容旁有应用场景/产品优势…列),直接读现成的,纯代码、不调AI、不重新提取。 */
+function parseExistingDetail(wb){
+  const out={};
+  wb.SheetNames.forEach(sn=>{
+    if(/^总结$|^summary$|^sheet ?2$/i.test(sn)) return;
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,defval:null});
+    let hr=-1; const col={};
+    for(let i=0;i<rows.length;i++){
+      const cells=(rows[i]||[]).map(x=>x==null?"":String(x).trim());
+      if(cells.some(c=>/^评论内容$/.test(c))){ hr=i; cells.forEach((c,j)=>{ if(["评论内容","应用场景","产品优势","问题反馈","相关软件","购买原因","软件","游戏"].includes(c)) col[c]=j; }); break; }
+    }
+    if(hr<0 || col["评论内容"]==null) return;
+    const details=[];
+    for(let i=hr+1;i<rows.length;i++){
+      const r=rows[i]||[]; const g=k=> col[k]!=null ? String(r[col[k]]==null?"":r[col[k]]).trim() : "";
+      const content=g("评论内容"); if(!content) continue;
+      const sw = g("相关软件") || [g("软件"),g("游戏")].filter(Boolean).join("、");
+      details.push({"评论内容":content,"应用场景":g("应用场景"),"产品优势":g("产品优势"),"问题反馈":g("问题反馈"),"相关软件":sw,"购买原因":g("购买原因")});
+    }
+    if(details.length){ const summary={}; ["应用场景","产品优势","问题反馈","相关软件","购买原因"].forEach(f=> summary[f]=summarize(details,f)); out[sn]={details, summary}; }
+  });
+  return out;
+}
+/* V3.7:测量【明细已打标签】的比例(识别类型②用)。诚实测量:返回带标签明细的占比,调用处据此判断 + 打日志,不藏魔法数。
+   ①②:明细列已填标签 → 占比高;③:只有评论列、标签列空 → 占比≈0;④:连评论列都没有 → parseExistingDetail 读不出 → total=0。 */
+function labeledFraction(rd){
+  let withLabel=0, total=0;
+  Object.values(rd||{}).forEach(o=> (o.details||[]).forEach(d=>{
+    total++;
+    if(((d["应用场景"]||"")+(d["产品优势"]||"")+(d["问题反馈"]||"")+(d["相关软件"]||"")).trim()) withLabel++;
+  }));
+  return { total, withLabel, frac: total? withLabel/total : 0 };
+}
+/* V3.7:无表头(类型②③④)时,从【明细标签】跨产品统计成 [名称,次数],格式与 parseTopBlocks 一致 → 喂给 buildTopGroups 聚类。
+   aggregateAcross 已做 splitTags 拆分 + 跨产品计数 + 按次数降序,正好复用。 */
+function buildTopBlocksFromDetails(rd){
+  const DIMS=["应用场景","产品优势","问题反馈","相关软件"];
+  const res={_sheets:Object.keys(rd||{}).length};
+  DIMS.forEach(d=> res[d]=aggregateAcross(rd, d));
+  return res;
+}
+/* ===== V3.4:汇总页【语义聚类】管线 = 提示词管判断 + 代码管铁律 =====
+   方法论=按"用户真实使用目的"语义聚类(不看字面看做的事),三档刻度(等价删重/包含分语境/相邻并列不删)。
+   实现:① AI 只给【序号】分组(绝不重写词→0造词) ② 代码去重剔垃圾 ③ 代码查漏 ④ AI 把漏项归进已有组(只选不建→0漏) ⑤ 代码加总。
+   已用真实表验证:0造词 / 0漏 / 0重。判断归AI、铁律归代码,既准又不飘。 */
+function extractJSON(s){
+  s = String(s||"").replace(/```json/gi,"").replace(/```/g,"").trim();
+  const a = s.indexOf("{"); if(a<0) return null;
+  // 1) 正常解析(首{到尾})
+  const b = s.lastIndexOf("}");
+  if(b>a){ try{ return JSON.parse(s.slice(a,b+1)); }catch(e){} }
+  // 2) 截断容错:JSON被max_tokens截断时,用正则捞出【所有完整的 group 对象】重建,救回大部分(big/sub/idx 顺序)
+  const groups=[], re=/\{\s*"big"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"sub"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"idx"\s*:\s*\[([\d,\s]*)\]/g;
+  let m; while((m=re.exec(s))){ const idx=m[3].split(",").map(x=>parseInt(x,10)).filter(x=>!isNaN(x)); groups.push({big:m[1],sub:m[2],idx}); }
+  return groups.length ? {groups, filtered_out:[]} : null;
+}
+const CLUSTER_METHOD = `方法论=语义聚类(按"用户真实想达成的目的"归并,不看字面看做的事):
+【三档刻度·决定该并多深】
+· 真等价 → 删重合并(NAS/服务器/媒体服务器/做媒体服务器=同一台设备;收发邮件=电子邮件;旅行使用=旅行时携带)
+· 上下位/子集 → 保留层级、按语境分(看YouTube⊂看视频归一类;"编码"在剪辑=转码、在编程=写代码,一词多义别错并)
+· 相邻不重合 → 同大类下并列、不删任何一个(连接电视≠媒体中心)
+【护栏】功能层(能干啥:编程/渲染) vs 场景层(在哪用:旅行/房车/商店) 不能混。`;
+const CLUSTER_CFG = {
+  "应用场景":'【固定大类·只做意图归类】big【必须严格从下面这13个固定大类里选一个,绝不自创新大类、绝不改名、绝不出现"其他/未归类"】:\n①办公生产力 ②学习研究 ③游戏娱乐 ④影音媒体 ⑤服务器/NAS/家庭实验室 ⑥AI/本地大模型 ⑦编程开发 ⑧图形设计剪辑 ⑨上网浏览 ⑩连接外设/制造设备 ⑪便携旅行 ⑫家用日常/替换旧机 ⑬金融理财。\n把每个序号按【用户真实用途】归进最贴切的那一个大类——【归类示范】媒体服务器/做媒体服务器/NAS/跑虚拟机/家庭实验室→⑤服务器;运行本地模型/AI工作站/训练模型→⑥AI;视频剪辑/渲染/转码/照片/照片编辑/照片归档/数字艺术/图形编辑/图像生成→⑧图形设计剪辑(凡是"照片/图片/图形"一律进⑧,绝不进⑩连接外设);连接电视/连接大显示器/连接显示器/3D打印/激光雕刻/CNC/弹球机/DTF打印→⑩连接外设;报税/股票/理财/财务→⑬金融理财;收发邮件/远程办公/多任务/会议→①办公;学习/研究/上网课/上网搜索→②学习研究。\nsub=该大类下的二级小类(取真实高频词)。【铁律】绝不把不相关的词硬塞进同一个大类。把"非应用场景"放 filtered_out【这几个务必过滤、绝不归进任何场景大类】:送礼(购买动机)、护卫舰网络视频审查器(软件名)、UNITX系统(系统名)、过渡(状态)。\n【★二级小类必须保留·绝不塌成一个】每个大类内部要按【更具体的真实用途】再分成多个二级小类组,sub 取该用途的真实高频词,每组 idx 只装属于该具体用途的序号。【严禁】把一个大类的所有词塞进一个组、只给一个笼统 sub(如办公生产力下只给一个「办公」)。示范:办公生产力→拆出{远程办公}{视频会议}{文档表格}{收发邮件}等多个二级;图形设计剪辑→拆{视频剪辑}{照片编辑}{平面设计};游戏娱乐→拆{Steam游戏}{复古游戏}{游戏串流}。只有【真同义】才并(电子表格=做表格),不同具体用途分开成不同二级组。',
+  "产品优势":'【一级】big=产品优势大类(体积小巧/性价比高/速度快/性能强/安静低噪/散热好/接口丰富/做工好/内存存储/外观/低功耗/易用/售后/稳定…),sub=该大类下一个语义合并组(sub名取真实高频词)。【同义务必并】速度快=运行速度快=运行流畅=开机快=启动快→速度快;性能好=性能强=性能强劲→性能强;安静=噪音小=风扇无声→安静。',
+  "问题反馈":'【扁平·必须狠狠合并】把【意思相同/相近的具体故障】并成一组,big 统一填"问题反馈",sub=合并后的组名(取真实高频词)。【必须合并的例子】风扇噪音大=风扇噪音=噪音大=接地噪音大→风扇噪音;无法开机=无法启动=开不了机→无法开机;死机=电脑死机=系统死机=死机崩溃→死机;蓝牙故障=蓝牙连接不稳定=蓝牙信号不稳定=蓝牙断连=蓝牙差→蓝牙故障;Wi-Fi故障=Wi-Fi连接问题=WiFi连接崩溃=网络连接问题→Wi-Fi故障;接口不够=接口少=USB接口不足=需要更多接口→接口不够。【别跨故障类型乱并·三档刻度】只并【同一种故障】的不同说法,【不同种类的故障绝不互相合并】:死机/崩溃/重启(运行中卡死)≠ 无法开机/无法启动(根本开不了机)——各自单独成组;散热差/发烫/温度高 ≠ 风扇噪音(一个是热、一个是吵);内存容量不够/不足 ≠ 内存单通道/频率低(一个是少、一个是规格);性能差 ≠ 显卡崩溃。【目标:把206项合并到 60~85 组以内】,严禁一项一组、严禁原样照搬不合并。',
+  "相关软件":'【两大类】big 只用"游戏"和"软件":游戏=《xx》/游戏名/游戏平台(Steam/Xbox等),其余=软件。每个 sub=一个变体归一组(sub名取真实高频词,如 Windows 11=Windows=Windows 11 Pro→Windows 11)。',
+};
+// ① AI 按序号分组(只填序号、绝不重写词→0造词)
+async function clusterByIndex(key, dim, items){
+  const N = items.length;
+  const numbered = items.map((p,i)=> i+". "+p[0]+"("+p[1]+")").join("\n");
+  const prompt = CLUSTER_METHOD + "\n\n【"+dim+"】共 "+N+" 项,每行\"序号. 名称(次数)\":\n"+numbered +
+    "\n\n"+CLUSTER_CFG[dim] +
+    "\n\n只输出严格JSON(不要解释、不要markdown):{\"groups\":[{\"big\":\"大类\",\"sub\":\"组名\",\"idx\":[序号]}],\"filtered_out\":[{\"idx\":序号,\"reason\":\"原因\"}]}。" +
+    "\n铁律:① 只能用上面的序号,【绝不重写或新增任何词】;② 0 到 "+(N-1)+" 每个序号都必须【恰好出现在一个组的 idx 里】(放进 filtered_out 的除外),一个都不能漏;③ 拿不准的也要归到最接近的组,不许丢;④ sub/big 名优先用列表里真实存在、次数高的词;⑤【严禁】用「其他/其它/未归类/杂项/通用/其余」当 big 或 sub——拿不准的也必须归进【最接近的真实大类】,绝不设兜底筐。";
+  return extractJSON(String(await callAI(key, prompt, 180000, 16000) || ""));
+}
+// ② 代码去重 + 剔垃圾 + 找真漏(每序号只归一组)
+function dedupGroups(items, parsed){
+  const N = items.length, isJunk = s=> !s || /^[\/\\\s]+$/.test(s);
+  const assigned = new Map(), groups = [];
+  (parsed.groups||[]).forEach(g=>{
+    const seen = new Set();
+    const idx = (g.idx||[]).filter(i=> Number.isInteger(i)&&i>=0&&i<N&&!assigned.has(i)&&!seen.has(i)&&(seen.add(i),true));
+    idx.forEach(i=> assigned.set(i,1));
+    groups.push({ big:String(g.big||"").trim()||"未分类", sub:String(g.sub||"").trim()||"其它", idx });
+  });
+  const filtered = new Set((parsed.filtered_out||[]).map(x=> x&&x.idx).filter(i=> Number.isInteger(i)&&i>=0&&i<N&&!assigned.has(i)));
+  for(let i=0;i<N;i++){ if(!assigned.has(i)&&isJunk(items[i][0])) filtered.add(i); }
+  const missing = [];
+  for(let i=0;i<N;i++){ if(!assigned.has(i)&&!filtered.has(i)) missing.push(i); }
+  return { groups, missing };
+}
+// ③ AI 把真漏项归进【已有组】(只选不建)→ 0漏
+async function placeMissing(key, dim, items, dd){
+  if(!dd.missing.length) return dd;
+  const labels = {}; dd.groups.forEach(g=>{ (labels[g.big]=labels[g.big]||new Set()).add(g.sub); });
+  const labelObj = {}; Object.keys(labels).forEach(b=> labelObj[b]=[...labels[b]]);
+  const missList = dd.missing.map(i=> items[i][0]+"("+items[i][1]+")");
+  const prompt = "以下是\""+dim+"\"里几个还没归类的词,把每个归进【已有大类→小类】(big/sub 必须从给定清单里选、不要新建)。按用户真实使用目的判断。\n已有清单:"+JSON.stringify(labelObj)+"\n待归位:"+JSON.stringify(missList) +
+    "\n只输出JSON:{\"placements\":[{\"name\":\"词\",\"big\":\"大类\",\"sub\":\"小类\"}]}";
+  let parsed=null; try{ parsed = extractJSON(String(await callAI(key, prompt, 90000, 2048)||"")); }catch(e){}
+  const strip = s=> String(s).replace(/[（(]\d+[）)]\s*$/,"").trim();
+  ((parsed&&parsed.placements)||[]).forEach(p=>{
+    const idx = items.findIndex(x=> x[0]===strip(p.name));
+    if(idx<0 || dd.missing.indexOf(idx)<0) return;
+    let g = dd.groups.find(x=> x.big===p.big && x.sub===p.sub);
+    if(!g){ g={ big:String(p.big||dim), sub:String(p.sub||items[idx][0]), idx:[] }; dd.groups.push(g); }
+    if(g.idx.indexOf(idx)<0) g.idx.push(idx);
+    dd.missing = dd.missing.filter(i=> i!==idx);
+  });
+  // 仍漏的(极少数):各自单独成组,保证一个不丢、且不进"其他"筐
+  dd.missing.forEach(i=>{
+    const fixedBig = dim==="问题反馈" ? "问题反馈" : (dim==="相关软件" ? "软件" : items[i][0]);
+    dd.groups.push({ big:fixedBig, sub:items[i][0], idx:[i] });
+  });
+  dd.missing = [];
+  return dd;
+}
+// 把分组+序号 还原成 {big,sub,members:[[名,次]],count};问题反馈/相关软件组名强制取最高频真实词
+function materialize(items, dim, groups){
+  return groups.map(g=>{
+    const members = g.idx.map(i=> items[i]).filter(Boolean).sort((a,b)=> b[1]-a[1]);
+    const count = members.reduce((s,m)=> s+m[1], 0);
+    let sub = g.sub;
+    if((dim==="问题反馈"||dim==="相关软件") && members.length) sub = members[0][0];
+    return { big:g.big, sub, members, count };
+  }).filter(g=> g.members.length).sort((a,b)=> b.count-a.count);
+}
+// 单类全流程:聚类→去重→归位漏项→还原。AI失败则退化为"每项各自成组"(绝不丢)
+async function clusterDimension(key, dim, items){
+  if(!items || !items.length) return [];
+  let parsed; try{ parsed = await clusterByIndex(key, dim, items); }catch(e){ parsed=null; }
+  // 解析失败(常见于最大的"问题反馈"列被截断)→ 自动重试一次,再不行才退回原始
+  if(!parsed || !Array.isArray(parsed.groups) || !parsed.groups.length){
+    try{ logLine(`【${dim}】聚类首次未成,自动重试…`, "warn"); }catch(e){}
+    try{ parsed = await clusterByIndex(key, dim, items); }catch(e){ parsed=null; }
+  }
+  if(!parsed || !Array.isArray(parsed.groups) || !parsed.groups.length){
+    try{ logLine(`【${dim}】聚类两次都未成,本维度退回原始未合并`, "warn"); }catch(e){}
+    return items.map(([n,k])=> ({ big: dim==="问题反馈"?"问题反馈":(dim==="相关软件"?"软件":n), sub:n, members:[[n,k]], count:k }));
+  }
+  let dd = dedupGroups(items, parsed);
+  try{ dd = await placeMissing(key, dim, items, dd); }catch(e){ dd.missing.forEach(i=> dd.groups.push({big:dim,sub:items[i][0],idx:[i]})); }
+  return materialize(items, dim, dd.groups);
+}
+// 4大类并发(各自 try,一类失败不连累其它)
+async function buildTopGroups(key, tb){
+  const DIMS = ["应用场景","产品优势","问题反馈","相关软件"];
+  const res = { _sheets: tb._sheets };
+  await Promise.all(DIMS.map(async d=>{
+    try{ res[d] = await clusterDimension(key, d, tb[d]||[]); }
+    catch(e){ res[d] = (tb[d]||[]).map(([n,k])=> ({big:d,sub:n,members:[[n,k]],count:k})); }
+  }));
+  return res;
+}
+
 /* ---------- 导出 Excel(按规范样本格式:顶部汇总 + 明细) ---------- */
 $("downloadBtn").onclick = async ()=>{
   if(!resultData){ toast("没有结果"); return; }
   const wb = new ExcelJS.Workbook();
   // V1.1:一个「总结」sheet —— 应用场景总结 + 应用场景汇总表 + 软件提及统计(上下排)
-  if(resultSceneSummary || (resultSceneTable&&resultSceneTable.length) || (resultAdvTable&&resultAdvTable.length) || (resultProbTable&&resultProbTable.length) || (resultSoftwareStats&&resultSoftwareStats.length)){
+  if(resultSceneSummary || resultTopGroups || resultTopBlocks || (resultSceneTable&&resultSceneTable.length) || (resultAdvTable&&resultAdvTable.length) || (resultProbTable&&resultProbTable.length) || (resultSoftwareStats&&resultSoftwareStats.length)){
     const ws = wb.addWorksheet("总结");
     ws.columns = [{width:26},{width:40},{width:12},{width:30},{width:46}];   // V3.1:col5(软件次数)加宽,col4(细分/明细)适中
     const sectionTitle = (text)=>{
@@ -1272,54 +1468,70 @@ $("downloadBtn").onclick = async ()=>{
       const end = ws.rowCount;
       if(end>=start){ ws.mergeCells(start,1,end,1); const lc=ws.getCell(start,1); lc.value="应用场景\n总结"; lc.font={bold:true,color:{argb:"FFFFFFFF"},size:14}; lc.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FF4472C4"}}; lc.alignment={horizontal:"center",vertical:"middle",wrapText:true}; }
     }
-    // 2. 应用场景汇总(V3.1 三层:大类|总频次|占比|细分场景|软件(次数);大类+总频次合并 → 选这两列插饼图)
-    if(resultSceneTable && resultSceneTable.length){
-      ws.addRow([]); sectionTitle("应用场景汇总（大类→细分场景→软件；选「应用场景」+「总频次」两列插饼图）");
-      const h = ws.addRow(["应用场景","总频次","占比","细分场景","软件名称（次数）"]);
-      h.eachCell(c=>{ c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center",vertical:"middle"}; });
-      const totalScene = resultSceneTable.reduce((s,r)=> s + (r.频次||0), 0) || 1;
-      const sceneSw = buildSceneSoftware(resultData);   // 场景标签 -> [[软件,次数]] 共现
-      const dataFirst = ws.rowCount + 1;
-      resultSceneTable.forEach(r=>{
-        const subs = (r.细分||[]).slice().sort((a,b)=> b[1]-a[1]);   // 细分场景按次数高到低
-        const lines = subs.length ? subs : [[r.大类, r.频次]];
-        const start = ws.rowCount + 1;
-        lines.forEach((sub,i)=>{
-          const tag = sub[0];
-          const sw = (sceneSw.get(tag)||[]).slice(0,8).map(x=> `${x[0]}(${x[1]})`).join("、");   // 该细分场景共现的软件(前8)
-          const row = ws.addRow([ i===0 ? r.大类 : "", i===0 ? r.频次 : "", i===0 ? r.频次/totalScene : "", tag, sw ]);
-          row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
-          row.getCell(2).alignment={horizontal:"center",vertical:"middle"};
-          row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
-          row.getCell(4).alignment={vertical:"middle",wrapText:true};
-          row.getCell(5).alignment={vertical:"middle",wrapText:true};
+    // V3.3:总结页4大类(应用场景/产品优势/问题反馈/相关软件)全部来自【每个产品表表头那行汇总、跨表加总】(parseTopBlocks),纯代码。
+    // V3.4:汇总页4子表来自【语义聚类管线】(resultTopGroups);若聚类失败则退回原始加总(resultTopBlocks)扁平显示
+    if(resultTopGroups || resultTopBlocks){
+      // 扁平块:名称|次数|占比 + 绿色数据条
+      const flatBlock = (title, items, col1)=>{
+        if(!items || !items.length) return;
+        ws.addRow([]); sectionTitle(title);
+        const h = ws.addRow([col1||"名称","次数","占比","",""]); [1,2,3].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
+        const total = (items||[]).reduce((s,x)=> s+x[1], 0) || 1; const first = ws.rowCount + 1;
+        (items||[]).forEach(([n,k])=>{ const r=ws.addRow([n,k,k/total,"",""]); r.getCell(1).alignment={vertical:"middle",wrapText:true}; r.getCell(2).alignment={horizontal:"center"}; r.getCell(3).alignment={horizontal:"center"}; r.getCell(3).numFmt="0.0%"; });
+        const last = ws.rowCount; try{ ws.addConditionalFormatting({ ref:`B${first}:B${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      };
+      // 分组按大类汇总成 [{big,count,subs:[{sub,count}]}](按大类次数降序)
+      const toBigList = (groups)=>{
+        const m = new Map();
+        (groups||[]).forEach(g=>{ if(!m.has(g.big)) m.set(g.big,{big:g.big,count:0,subs:[]}); const o=m.get(g.big); o.count+=g.count; o.subs.push({sub:g.sub,count:g.count}); });
+        return [...m.values()].sort((a,b)=> b.count-a.count);
+      };
+      // 两级块:大类(合并) | 二级小类/组/名称 | 次数 | 占比(只在大类行=该大类÷全列) + 绿色数据条
+      const twoLevelBlock = (title, header, bigList)=>{
+        if(!bigList || !bigList.length) return;
+        const total = bigList.reduce((s,b)=> s+b.count, 0) || 1;
+        ws.addRow([]); sectionTitle(title);
+        const h = ws.addRow([header[0],header[1],header[2],header[3],""]); [1,2,3,4].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
+        const dataFirst = ws.rowCount + 1;
+        bigList.forEach(b=>{
+          const subs = (b.subs||[]).slice().sort((x,y)=> y.count-x.count);
+          const start = ws.rowCount + 1;
+          (subs.length? subs : [{sub:"（无明细）",count:b.count}]).forEach((s,i)=>{
+            const row = ws.addRow([ i===0?b.big:"", s.sub, s.count, i===0?(b.count/total):"", "" ]);
+            row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
+            row.getCell(2).alignment={vertical:"middle",wrapText:true};
+            row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
+            row.getCell(4).alignment={horizontal:"center",vertical:"middle"};
+          });
+          const end = ws.rowCount;
+          if(end>start){ ws.mergeCells(start,1,end,1); ws.mergeCells(start,4,end,4); }
+          ws.getCell(start,1).font={bold:true}; ws.getCell(start,1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
+          ws.getCell(start,4).numFmt="0.0%"; ws.getCell(start,4).alignment={horizontal:"center",vertical:"middle"};
+          for(let c=1;c<=4;c++){ const cell=ws.getCell(end,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"medium",color:{argb:"FFBBBBBB"}}}); }
         });
-        const end = ws.rowCount;
-        if(end > start){ ws.mergeCells(start,1,end,1); ws.mergeCells(start,2,end,2); ws.mergeCells(start,3,end,3); }  // 大类/总频次/占比 合并(喂饼图)
-        ws.getCell(start,1).font={bold:true}; ws.getCell(start,1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
-        ws.getCell(start,3).numFmt="0%";
-        for(let c=1;c<=5;c++){ const cell=ws.getCell(end,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"medium",color:{argb:"FFBBBBBB"}}}); }  // V3.1:大类之间加分隔线
-      });
-      const dataLast = ws.rowCount;
-      try{ ws.addConditionalFormatting({ ref:`B${dataFirst}:B${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
-    }
-    // 3. 产品优势 / 问题反馈汇总(两层:大类 → 细分 → 次数)
-    catSection("产品优势汇总", ["产品优势类目","产品优势明细","次数","占比"], resultAdvTable);
-    catSection("问题反馈汇总", ["问题类目","问题明细","次数","占比"], resultProbTable);
-    // 3. 软件提及统计(固定规则归类 + 类别合并 + 提及次数绿色数据条 + 占比)
-    if(resultSoftwareStats && resultSoftwareStats.length){
-      ws.addRow([]);
-      sectionTitle("软件提及统计");
-      const hd = ws.addRow(["软件类别","软件名称","提及次数","主要功能描述"]);
-      hd.eachCell(c=>{ c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center",vertical:"middle"}; });
-      const first = ws.rowCount + 1;
-      resultSoftwareStats.forEach(r=>{ const row=ws.addRow([r.类别, r.名称, r.次数, r.描述||""]); row.getCell(1).alignment={horizontal:"center",vertical:"middle"}; row.getCell(2).alignment={horizontal:"left",vertical:"middle",wrapText:true}; row.getCell(3).alignment={horizontal:"center",vertical:"middle"}; row.getCell(4).alignment={horizontal:"left",vertical:"middle",wrapText:true}; });
-      const last = ws.rowCount;
-      let rr=first;
-      while(rr<=last){ const cat=ws.getCell(rr,1).value; let e=rr; while(e+1<=last && ws.getCell(e+1,1).value===cat) e++; if(e>rr) ws.mergeCells(rr,1,e,1); ws.getCell(rr,1).alignment={horizontal:"center",vertical:"middle"};
-        for(let c=1;c<=4;c++){ const cell=ws.getCell(e,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"medium",color:{argb:"FFBBBBBB"}}}); }  // V3.1:软件大类之间加分隔线
-        rr=e+1; }
-      try{ ws.addConditionalFormatting({ ref:`C${first}:C${last}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+        const dataLast = ws.rowCount; try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      };
+      if(resultTopGroups){
+        const tg = resultTopGroups;
+        // ① 应用场景:大类级汇总(供饼图) + 大类→二级小类明细
+        const sceneBig = toBigList(tg["应用场景"]);
+        flatBlock("应用场景汇总（大类，选「大类」+「次数」两列插饼图）", sceneBig.map(b=>[b.big,b.count]));
+        twoLevelBlock("应用场景明细（大类 → 二级小类）", ["大类","二级小类","次数","占比"], sceneBig);
+        // ② 产品优势:大类 → 组
+        // ② 产品优势:扁平(大类 | 次数 | 占比),去掉冗余的"组"列
+        flatBlock("产品优势汇总", toBigList(tg["产品优势"]).map(b=>[b.big, b.count]), "大类");
+        // ③ 问题反馈:扁平(合并组,名称取真实高频词)
+        flatBlock("问题反馈汇总", (tg["问题反馈"]||[]).map(g=>[g.sub,g.count]).sort((a,b)=> b[1]-a[1]));
+        // ④ 相关软件:软件 / 游戏 两大类 → 变体归一组
+        twoLevelBlock("软件提及统计（相关软件）", ["大类","名称","次数","占比"], toBigList(tg["相关软件"]));
+      } else {
+        // 退化:聚类失败时,用原始加总扁平显示(不丢数据)
+        const tb = resultTopBlocks;
+        flatBlock("应用场景汇总（选「名称」+「次数」两列插饼图）", tb["应用场景"]);
+        flatBlock("产品优势汇总", tb["产品优势"]);
+        flatBlock("问题反馈汇总", tb["问题反馈"]);
+        flatBlock("相关软件汇总", tb["相关软件"]);
+      }
     }
   }
   // V3.0:把「相关软件」按 SOFTWARE_CATS 的游戏规则拆成 游戏 / 其它软件 两栏(对标范本 J/K 列),纯确定性分流、不调AI
