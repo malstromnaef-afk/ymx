@@ -83,8 +83,8 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V3.9 智谱·代码+AI混合</span></h1>
-    <div class="sub">重新提取四字段 → 「总结」表(可勾选):应用场景总结(逐场景挖具体需求)+饼图数据·产品优势/问题反馈两层汇总·软件统计(带描述)</div>
+    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V4.0 智谱</span></h1>
+    <div class="sub">「总结」表:应用场景总结(文字) + 应用场景汇总(大类·次数·占比,给饼图) + 产品优势/问题反馈/相关软件(类别·具体·次数·描述)</div>
   </header>
 
   <!-- 第一步:API Key -->
@@ -717,6 +717,12 @@ $("startBtn").onclick = async ()=>{
       const nb = d=> new Set((resultTopGroups[d]||[]).map(g=>g.big)).size;
       logLine(`聚类完成:应用场景 ${nb("应用场景")}大类/${(resultTopGroups["应用场景"]||[]).length}组、产品优势 ${nb("产品优势")}大类、问题反馈 ${(resultTopGroups["问题反馈"]||[]).length}组、相关软件 ${(resultTopGroups["相关软件"]||[]).length}组`, "ok");
     }catch(e){ logLine(`聚类失败(${e.message}),汇总退回原始加总`, "warn"); resultTopGroups = null; }
+    // V3.9.1:给后3维(产品优势/问题反馈/相关软件)生成"说明/功能描述"列(AI,各1次,失败留空、不影响表)
+    if(resultTopGroups){
+      // V4.1:描述列秒出、无需AI——相关软件查内置功能词典、产品优势/问题反馈填二级目录
+      for(const d of ["产品优势","问题反馈","相关软件"]) fillDescriptions(d, resultTopGroups[d]||[]);
+      logLine("「描述」列已填:相关软件=内置功能词典、产品优势/问题反馈=二级目录(秒出,无需AI)", "ok");
+    }
     // V3.7:已砍掉 reclassifyCatchall / mergeDetailsByIntent / 产品优势·问题反馈的 categorizeField + buildSoftwareStats —— 导出4大类(产品优势/问题反馈/软件)自 V3.4 起全部来自上面的语义聚类 resultTopGroups,这些是不再被消费的【废 AI 步骤】,白白浪费几十次 AI 调用。
     try{
       setProgress(totalUnits, totalUnits, "生成应用场景总结…", startTime);
@@ -917,7 +923,18 @@ ${digest}
 
 【写完自查】输出前再过一遍每一条:方案有没有落到一个【具体的硬件/接口/BIOS/配置点】?有没有混进"优化散热设计/优化散热系统/提升整体性能/增强体验/搭载高性能处理器"这类空壳?有就【就地改成该场景摘录里的具体诉求】再输出。
 只输出正文，不要额外说明/markdown/代码块。`;
-  let out = String(await callAI(key, prompt, 180000)||"").replace(/^\`\`\`[a-z]*\n?/i,"").replace(/\`\`\`$/,"").trim();
+  // V3.9.1:加重试——应用场景总结这条纯AI路不稳,一次失败/返空就别放弃,最多试3次(防 (9) 里整段缺失)
+  let out = "";
+  for(let _a=1; _a<=3 && (!out || out.length<20); _a++){
+    try{ out = String(await callAI(key, prompt, 180000)||"").replace(/^\`\`\`[a-z]*\n?/i,"").replace(/\`\`\`$/,"").trim(); }
+    catch(e){ if(_a>=3) break; await sleep(1500*_a); }   // V4.1:AI挂也别抛,走下面代码兜底
+  }
+  // V4.1:代码兜底——AI 三次都写不出时,至少用数据生成「占比排序」正文,保证「应用场景总结」永远在、不再整段缺失
+  if(!out || out.length<20){
+    const ord=["一","二","三","四","五","六","七","八"];
+    const lines = top.map((r,i)=> `${ord[i]||(i+1)}、${i===0?"占比最高的是":"第"+(i+1)+"个场景是"}：${r.大类}，约占 ${(r.频次/totalSceneF*100).toFixed(1)}%（${r.频次}次）`);
+    out = `汇总了 ${models.length} 款产品、共 ${totalReviews} 条评论。\n\n`+lines.join("\n")+`\n\n（注：本次"需求→方案"正文由AI生成失败，已先给出各场景占比排序；可重跑补全。）\n占比较低的长尾场景，后续深入挖掘作为储备差异化方向。`;
+  }
   out = out.replace(/\s*([一二三四五六七八九十]{1,3}[、.．]\s*(?:占比|第))/g, "\n\n$1")
            .replace(/\s*(\d+\s*[.．]\s)/g, "\n$1").replace(/\n{3,}/g, "\n\n").trim();
   return out;
@@ -1447,19 +1464,80 @@ const PROB_RULES=[
  ["品控做工差",/质量|做工|损坏|二手|缺陷|品控|耐用|过时|廉价|鼠标|键盘|光驱|线缆|螺丝|包装|退换|壁挂|说明书|文档/],
  ["性价比低",/性价比|价格|贵/],
 ];
-const CATCHALL={ "产品优势":"产品好", "问题反馈":"整机可靠性差/综合硬件故障", "相关软件":"系统与驱动" };
+/* V3.9.2:应用场景也上代码路由(根治"退回原始/AI自创大类")。关键词→固定10大类,顺序=具体在前、笼统在后(find取首个命中)。 */
+const SCENE_CANON=["办公生产力","学习研究","游戏娱乐","影音休闲娱乐","家庭服务器/NAS","本地AI算力推理","编程开发","图文视频创意设计","创客制造","家用与备机"];
+const SCENE_RULES=[
+ ["创客制造",/3d ?打印|3d ?print|\bcnc\b|激光|雕刻|弹球|\bdtf\b|车床|创客|\bmaker\b|手工制作/i],
+ ["本地AI算力推理",/本地模型|本地 ?ai|ai ?推理|ai ?模型|大模型|\bllm\b|机器学习|深度学习|训练模型|模型训练|跑模型|算力|推理|llama|stable ?diffusion|comfyui|ai ?绘图|ai ?生成/i],
+ ["编程开发",/编程|开发|程序|代码|coding|码农|程序员|双系统|装 ?linux|\blinux\b|ubuntu|debian|fedora|\bgit\b|脚本|建站|搭建环境|开发环境/i],
+ ["家庭服务器/NAS",/服务器|\bnas\b|虚拟机|虚拟化|家庭实验室|home ?lab|软路由|web ?服务|自建|存储服务|媒体服务器|proxmox|unraid|truenas|群晖|\bdocker\b|home ?assistant|家庭服务|跑虚拟机/i],
+ ["图文视频创意设计",/剪辑|渲染|转码|视频编辑|视频制作|照片|图片|图形|绘图|数字艺术|平面设计|创意设计|建模|后期|调色|\bps\b|photoshop|premiere|达芬奇|图文/i],
+ ["影音休闲娱乐",/看视频|看片|看电影|观影|追剧|听音乐|音乐|流媒体|媒体中心|电视盒子|连接电视|电视|影音|串流播放|netflix|youtube|\bplex\b|kodi|emby|媒体播放|家庭影院|\bhtpc\b/i],
+ ["游戏娱乐",/游戏|玩 ?游戏|电竞|主机游戏|游戏串流|\bsteam\b|\bepic\b|xbox|模拟器|retro|emulat|云游戏|手游/i],
+ ["办公生产力",/办公|邮件|远程办公|远程桌面|会议|视频会议|多任务|多屏|多显示器|三屏|excel|\bword\b|文档|表格|生产力|商务|工作流|演示|远程工作|\bwfh\b/i],
+ ["学习研究",/学习|研究|上网课|网课|查资料|教育|科研|学术|做作业|课程|培训|学生|笔记/i],
+ ["家用与备机",/家用|日常|备用|备机|主力机|替换|旧机|换机|便携|旅行|房车|出差|报税|股票|理财|财务|记账|创业|做生意|上网|浏览|网页|社交|休闲|通用|看新闻|轻办公/i],
+];
+/* 把任意 big 规范到固定10大类:本身就是→直接用;否则用关键词反查;再不行按变体名兜底;最后落"家用与备机"。防AI兜底飘出新名(如"办公学习商务/影音媒体/AI算力")。 */
+function canonScene(big){
+  big=String(big||"").trim();
+  if(SCENE_CANON.includes(big)) return big;
+  const r=SCENE_RULES.find(x=> x[1].test(big)); if(r) return r[0];
+  if(/办公|商务|生产力|工作/.test(big)) return "办公生产力";
+  if(/学习|研究|教育|科研/.test(big)) return "学习研究";
+  if(/游戏|电竞/.test(big)) return "游戏娱乐";
+  if(/影音|视频|媒体|流媒体|观影|追剧|电视|娱乐/.test(big)) return "影音休闲娱乐";
+  if(/服务器|nas|虚拟|实验室|软路由|存储/i.test(big)) return "家庭服务器/NAS";
+  if(/\bai\b|算力|推理|模型/i.test(big)) return "本地AI算力推理";
+  if(/编程|开发|代码|linux|双系统/i.test(big)) return "编程开发";
+  if(/创意|设计|剪辑|图形|图文|绘图|渲染|照片/.test(big)) return "图文视频创意设计";
+  if(/创客|3d|打印|cnc|激光|雕刻/i.test(big)) return "创客制造";
+  return "家用与备机";
+}
+const CATCHALL={ "应用场景":"家用与备机", "产品优势":"产品好", "问题反馈":"整机可靠性差/综合硬件故障", "相关软件":"系统与驱动" };
 function codeRouteOne(dim, w){
   if(dim==="相关软件"){ if(isGameItem(w)) return {big:"娱乐游戏", sub:gameNorm(w)};
     const r=SW_RULES.find(x=>x[1].test(w)); return r? {big:r[0], sub:swNorm(w)} : null; }
+  if(dim==="应用场景"){ const r=SCENE_RULES.find(x=>x[1].test(w)); return r? {big:r[0], sub:w} : null; }
   const RULES = dim==="产品优势"?PROD_RULES:(dim==="问题反馈"?PROB_RULES:null);
   if(!RULES) return null; const r=RULES.find(x=>x[1].test(w)); return r? {big:r[0], sub:w} : null;
+}
+/* V3.9.3:新词【简化归类】——只让AI把每个新词各选一个固定大类(扁平map),比序号制groups稳得多(输出小·不易截断);失败/没匹配也只落 catchall 或 canonScene,【绝不退回原始词当大类】。根治"聚类两次都未成→退回原始未合并"。 */
+const FIXED_BIGS={
+ "应用场景": SCENE_CANON,
+ "产品优势": ["机身小巧","运行顺畅","性价比高","性能强劲","运行安静","散热良好","简单易用","接口丰富","扩展性强","做工精良","容量充足","外观好看","功耗低","稳定性好","服务体验好","产品好"],
+ "问题反馈": ["系统不稳定/频繁异常","散热差/噪音大","连接不稳/网络故障","性能差/运行慢","系统与软件缺陷","内存存储不足/不可升级","接口不够/故障多","显示异常/音视频输出问题","品控做工差","售后服务差","电源/适配器故障","性价比低","整机可靠性差/综合硬件故障"],
+ "相关软件": ["系统与驱动","内容与创作","效率与办公","开发与运维","娱乐游戏"],
+};
+async function classifyNewWords(key, dim, words){
+  const list=words.map(x=>x[0]); const bigs=FIXED_BIGS[dim]||[];
+  if(!list.length||!bigs.length) return {};
+  const prompt=`把下面每个【${dim}】词,各归到这些固定大类中的【一个】(只能从中选、绝不新建、绝不"其他"):\n${bigs.join(" / ")}\n\n词(逐字照抄当key):\n${list.join("\n")}\n\n只输出严格JSON对象,key=词、value=大类,不要解释、不要markdown:\n{"词":"大类", ...}`;
+  let map=null;
+  for(let a=1; a<=2 && !map; a++){
+    try{ let raw=String(await callAI(key, prompt, 150000, 8000)||"").replace(/\`\`\`json/gi,"").replace(/\`\`\`/g,""); const s=raw.indexOf("{"), e=raw.lastIndexOf("}"); map=(s>=0&&e>s)?JSON.parse(raw.slice(s,e+1)):null; }
+    catch(err){ if(a>=2) map={}; else await sleep(1200); }
+  }
+  return map||{};
+}
+// 把AI给的大类对齐到固定表:精确命中→用;含子串→用固定名;再不行→应用场景走canonScene、其它落catchall。绝不让原始词当大类。
+function snapBig(dim, aiBig, word){
+  const FB=FIXED_BIGS[dim]||[];
+  if(FB.includes(aiBig)) return aiBig;
+  const hit=FB.find(b=> aiBig && (aiBig.includes(b)||b.includes(aiBig)));
+  if(hit) return hit;
+  return dim==="应用场景" ? canonScene(aiBig||word) : (CATCHALL[dim]||dim);
 }
 async function hybridDimension(key, dim, items){
   if(!items||!items.length) return {groups:[], newWords:[]};
   const map={}, unknown=[];
   items.forEach(([w,c])=>{ const r=codeRouteOne(dim,w); if(r){ (map[r.big]=map[r.big]||{}); (map[r.big][r.sub]=map[r.big][r.sub]||[]).push([w,c]); } else unknown.push([w,c]); });
-  let aiGroups=[];
-  if(unknown.length){ try{ logLine(`【${dim}】代码命中 ${items.length-unknown.length}/${items.length},新词 ${unknown.length} 个交 AI 兜底归类…`,"ai"); aiGroups=await clusterDimension(key, dim, unknown); }catch(e){ aiGroups=unknown.map(([w,c])=>({big:CATCHALL[dim]||dim,sub:w,members:[[w,c]],count:c})); } }
+  const aiGroups=[];
+  if(unknown.length){
+    try{ logLine(`【${dim}】代码命中 ${items.length-unknown.length}/${items.length},新词 ${unknown.length} 个交 AI【简化归类·只选固定大类】…`,"ai"); }catch(e){}
+    let cmap={}; try{ cmap=await classifyNewWords(key, dim, unknown); }catch(e){ cmap={}; }
+    unknown.forEach(([w,c])=>{ aiGroups.push({ big: snapBig(dim, cmap[w], w), sub:w, members:[[w,c]], count:c }); });
+  }
   const out=[];
   for(const big in map) for(const sub in map[big]){ const m=map[big][sub].sort((a,b)=>b[1]-a[1]); out.push({big,sub,members:m,count:m.reduce((s,x)=>s+x[1],0)}); }
   aiGroups.forEach(g=> out.push(g));
@@ -1469,13 +1547,31 @@ async function hybridDimension(key, dim, items){
 // ①应用场景纯AI;②③④代码命中已知+AI兜底新词
 async function buildTopGroups(key, tb){
   const res = { _sheets: tb._sheets, _newWords:{} };
-  try{ res["应用场景"]=await clusterDimension(key,"应用场景",tb["应用场景"]||[]); }
+  // V3.9.2:应用场景改走【代码命中SCENE_RULES + AI兜底新词】,再用 canonScene 强制收进固定10大类(根治退回原始/AI自创大类)
+  try{ const h=await hybridDimension(key,"应用场景",tb["应用场景"]||[]); res["应用场景"]=h.groups; res._newWords["应用场景"]=h.newWords; }
   catch(e){ res["应用场景"]=(tb["应用场景"]||[]).map(([n,k])=>({big:"家用与备机",sub:n,members:[[n,k]],count:k})); }
+  (res["应用场景"]||[]).forEach(g=> g.big=canonScene(g.big));
   await Promise.all(["产品优势","问题反馈","相关软件"].map(async d=>{
     try{ const h=await hybridDimension(key,d,tb[d]||[]); res[d]=h.groups; res._newWords[d]=h.newWords; }
     catch(e){ res[d]=(tb[d]||[]).map(([n,k])=>({big:d,sub:n,members:[[n,k]],count:k})); res._newWords[d]=[]; }
   }));
   return res;
+}
+/* V4.1:描述列【彻底不用AI·全有依据·不瞎写】,照搬 V3.5 那套秒出逻辑:
+   · 相关软件 → 内置功能词典(事实)softwareDesc;查不到【不留空不编造】,老实写"原文仅提及名称、未描述用途";再把被合并进来的【真实变体写法(二级目录)】标出来"(含X、Y写法合并)"。
+   · 产品优势/问题反馈 → 直接填"二级目录"=归到这条下面的真实原词(members),纯数据。 */
+function fillDescriptions(dim, groups){
+  (groups||[]).forEach(g=>{
+    const mem=[...new Set((g.members||[]).map(m=>m[0]).filter(Boolean))];
+    if(dim==="相关软件"){
+      let desc = softwareDesc(g.sub) || "（原文仅提及名称，未描述用途）";
+      const variants = mem.filter(v=> v!==g.sub);                       // 被并进来的其它真实写法
+      if(variants.length) desc += `（含 ${variants.slice(0,3).join("、")}${variants.length>3?" 等":""} 写法合并）`;
+      g.desc = desc;
+    } else {
+      g.desc = mem.join("、");   // 二级目录:归到这条下面的真实原词
+    }
+  });
 }
 
 /* ---------- 导出 Excel(按规范样本格式:顶部汇总 + 明细) ---------- */
@@ -1580,19 +1676,62 @@ $("downloadBtn").onclick = async ()=>{
         });
         const dataLast = ws.rowCount; try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
       };
+      // V3.9.1:说明块——【类别(合并) | 具体 | 次数 | 说明/描述】,对标软件提及统计图片。groups=[{big,sub,count,desc}]
+      const descBlock = (title, header, groups)=>{
+        if(!groups || !groups.length) return;
+        ws.addRow([]); sectionTitle(title);
+        const h = ws.addRow([header[0],header[1],header[2],header[3],""]); [1,2,3,4].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
+        const m=new Map();
+        groups.forEach(g=>{ if(!m.has(g.big)) m.set(g.big,{big:g.big,count:0,rows:[]}); const o=m.get(g.big); o.count+=g.count; o.rows.push(g); });
+        const bigs=[...m.values()].sort((a,b)=> b.count-a.count);
+        const dataFirst=ws.rowCount+1;
+        bigs.forEach(b=>{
+          const rows=b.rows.slice().sort((x,y)=> y.count-x.count);
+          const start=ws.rowCount+1;
+          rows.forEach((g,i)=>{
+            const row=ws.addRow([ i===0?b.big:"", g.sub, g.count, g.desc||"", "" ]);
+            row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
+            row.getCell(2).alignment={vertical:"middle",wrapText:true};
+            row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
+            row.getCell(4).alignment={vertical:"middle",wrapText:true};
+          });
+          const end=ws.rowCount;
+          if(end>start) ws.mergeCells(start,1,end,1);
+          ws.getCell(start,1).font={bold:true}; ws.getCell(start,1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
+          for(let c=1;c<=4;c++){ const cell=ws.getCell(end,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"medium",color:{argb:"FFBBBBBB"}}}); }
+        });
+        const dataLast=ws.rowCount; try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      };
+      // V4.1:大类汇总块——【大类 | 总次数 | 二级目录(该大类下全部真实原词+次数)】,一个大类一行。用于产品优势/问题反馈:大类=洞察、原词=证据,纯数据0编造。
+      const bigDigestBlock = (title, header, groups)=>{
+        if(!groups || !groups.length) return;
+        const m=new Map();
+        groups.forEach(g=>{ if(!m.has(g.big)) m.set(g.big,{big:g.big,total:0,subs:[]}); const o=m.get(g.big); o.total+=g.count; o.subs.push([g.sub,g.count]); });
+        const bigs=[...m.values()].sort((a,b)=> b.total-a.total);
+        ws.addRow([]); sectionTitle(title);
+        const h=ws.addRow([header[0],header[1],header[2],""]); [1,2,3].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
+        const dataFirst=ws.rowCount+1;
+        bigs.forEach(b=>{
+          const list=b.subs.slice().sort((x,y)=> y[1]-x[1]).map(s=> `${s[0]}(${s[1]})`).join("、");
+          const row=ws.addRow([ b.big, b.total, list, "" ]);
+          row.getCell(1).font={bold:true}; row.getCell(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
+          row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
+          row.getCell(2).alignment={horizontal:"center",vertical:"middle"};
+          row.getCell(3).alignment={vertical:"middle",wrapText:true};
+          for(let c=1;c<=3;c++){ const cell=ws.getCell(row.number,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"thin",color:{argb:"FFDDDDDD"}}}); }
+        });
+        const dataLast=ws.rowCount; try{ ws.addConditionalFormatting({ ref:`B${dataFirst}:B${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+      };
       if(resultTopGroups){
         const tg = resultTopGroups;
-        // ① 应用场景:大类级汇总(供饼图) + 大类→二级小类明细
+        // ① 应用场景:只要【大类·次数·占比】一个表(给饼图)。V3.9.1:按用户要求删掉"二级小类明细"那块。
         const sceneBig = toBigList(tg["应用场景"]);
         flatBlock("应用场景汇总（大类，选「大类」+「次数」两列插饼图）", sceneBig.map(b=>[b.big,b.count]));
-        twoLevelBlock("应用场景明细（大类 → 二级小类）", ["大类","二级小类","次数","占比"], sceneBig);
-        // ② 产品优势:大类 → 组
-        // ② 产品优势:扁平(大类 | 次数 | 占比),去掉冗余的"组"列
-        flatBlock("产品优势汇总", toBigList(tg["产品优势"]).map(b=>[b.big, b.count]), "大类");
-        // ③ 问题反馈:13固定大类 → 二级故障(V3.8 改两级)
-        twoLevelBlock("问题反馈汇总（大类 → 具体故障）", ["问题大类","具体故障","次数","占比"], toBigList(tg["问题反馈"]));
-        // ④ 相关软件:软件 / 游戏 两大类 → 变体归一组
-        twoLevelBlock("软件提及统计（相关软件）", ["大类","名称","次数","占比"], toBigList(tg["相关软件"]));
+        // ② 产品优势 / ③ 问题反馈:大类=洞察、二级目录=该大类下全部真实原词(带次数),一个大类一行——纯数据、不冗余、0编造
+        bigDigestBlock("产品优势汇总", ["优势类别","次数","具体优势（用户真实原话·按次数）"], tg["产品优势"]);
+        bigDigestBlock("问题反馈汇总", ["问题类别","次数","具体问题（用户真实原话·按次数）"], tg["问题反馈"]);
+        // ④ 相关软件:类别→名称→次数→功能描述(内置功能词典事实 + 真实变体二级目录 + 查不到老实说)
+        descBlock("软件提及统计（相关软件）", ["软件类别","软件名称","提及次数","主要功能描述"], tg["相关软件"]);
       } else {
         // 退化:聚类失败时,用原始加总扁平显示(不丢数据)
         const tb = resultTopBlocks;
@@ -1602,12 +1741,7 @@ $("downloadBtn").onclick = async ()=>{
         flatBlock("相关软件汇总", tb["相关软件"]);
       }
     }
-    // V3.9:本次新词清单(代码规则未命中、AI兜底归类的)→ 导出供 agent 核对后沉淀进规则库
-    if(resultTopGroups && resultTopGroups._newWords){
-      const nw=resultTopGroups._newWords; const lns=[];
-      ["产品优势","问题反馈","相关软件"].forEach(dn=>{ const a=nw[dn]||[]; if(a.length) lns.push(`【${dn}】${a.length} 个新词(规则未命中·AI已归类·待核对入库)：`+a.join("、")); });
-      if(lns.length){ ws.addRow([]); sectionTitle("本次新词（待 agent 核对后入规则库）"); lns.forEach(t=>{ const r=ws.addRow(["",t]); ws.mergeCells(r.number,2,r.number,5); r.getCell(2).alignment={vertical:"top",wrapText:true}; }); }
-    }
+    // V3.9.1:按用户要求，导出里【不再显示】"本次新词"那块(新词仍在内部统计、agent核对走对话,不进交付表)。
   }
   // V3.0:把「相关软件」按 SOFTWARE_CATS 的游戏规则拆成 游戏 / 其它软件 两栏(对标范本 J/K 列),纯确定性分流、不调AI
   const GAME_RE = (SOFTWARE_CATS.find(c=> c.name==="游戏")||{}).re;
