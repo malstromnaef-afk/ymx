@@ -83,7 +83,7 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V4.0 智谱</span></h1>
+    <h1>亚马逊评论分析工具 <span style="font-size:13px;color:#888;font-weight:normal;">V4.2 智谱</span></h1>
     <div class="sub">「总结」表:应用场景总结(文字) + 应用场景汇总(大类·次数·占比,给饼图) + 产品优势/问题反馈/相关软件(类别·具体·次数·描述)</div>
   </header>
 
@@ -719,15 +719,19 @@ $("startBtn").onclick = async ()=>{
     }catch(e){ logLine(`聚类失败(${e.message}),汇总退回原始加总`, "warn"); resultTopGroups = null; }
     // V3.9.1:给后3维(产品优势/问题反馈/相关软件)生成"说明/功能描述"列(AI,各1次,失败留空、不影响表)
     if(resultTopGroups){
-      // V4.1:描述列秒出、无需AI——相关软件查内置功能词典、产品优势/问题反馈填二级目录
-      for(const d of ["产品优势","问题反馈","相关软件"]) fillDescriptions(d, resultTopGroups[d]||[]);
-      logLine("「描述」列已填:相关软件=内置功能词典、产品优势/问题反馈=二级目录(秒出,无需AI)", "ok");
+      // 产品优势/问题反馈:二级目录(纯数据,无需AI);相关软件描述:AI主力(现写)→词典兜底
+      fillDescriptions("产品优势", resultTopGroups["产品优势"]||[]);
+      fillDescriptions("问题反馈", resultTopGroups["问题反馈"]||[]);
+      try{ logLine("相关软件描述:AI 现写功能(失败/没覆盖的退内置词典兜底)…", "ai"); await genSoftwareDesc(key, resultTopGroups["相关软件"]||[]); }
+      catch(e){ logLine(`相关软件描述AI失败(${e.message}),全退词典兜底`, "warn"); }
+      fillDescriptions("相关软件", resultTopGroups["相关软件"]||[]);
+      logLine("「描述」列已填(相关软件 AI主力·词典兜底;产品/问题=二级目录)", "ok");
     }
     // V3.7:已砍掉 reclassifyCatchall / mergeDetailsByIntent / 产品优势·问题反馈的 categorizeField + buildSoftwareStats —— 导出4大类(产品优势/问题反馈/软件)自 V3.4 起全部来自上面的语义聚类 resultTopGroups,这些是不再被消费的【废 AI 步骤】,白白浪费几十次 AI 调用。
     try{
       setProgress(totalUnits, totalUnits, "生成应用场景总结…", startTime);
-      logLine("生成「应用场景总结」正文(1 次 AI)…", "ai");
-      resultSceneSummary = await buildSceneSummary(key, resultData, resultSceneTable);
+      logLine("生成「应用场景总结」正文(占比最高的几个场景·每场景1次AI写需求→方案)…", "ai");
+      resultSceneSummary = await buildSceneSummary(key, resultData, (resultTopGroups && resultTopGroups["应用场景"]) || []);
       if(resultSceneSummary) logLine("「应用场景总结」已生成", "ok");
     }catch(err){ logLine(`应用场景总结生成失败（${err.message}），不影响其它结果`, "warn"); }
   } else {
@@ -889,55 +893,81 @@ function sceneProfile(resultData, catName, gAdv, gProb, totalReviews){
   const swTop = Object.entries(sw).sort((a,b)=> b[1]-a[1]).slice(0,8).map(a=> a[0]);
   return { adv: distinct(lAdv,gAdv), prob: distinct(lProb,gProb), sw: swTop, exc };
 }
-/* V2.0:应用场景总结正文 —— 逐场景用【相对突出的需求 + 真实评论摘录】喂AI,写具体、各有侧重的"需求→方案"(对标范本)。失败返回"" */
-async function buildSceneSummary(key, resultData, sceneTable){
-  const models = Object.keys(resultData); if(!models.length || !sceneTable || !sceneTable.length) return "";
-  let totalReviews = 0; const gAdv={}, gProb={};
-  const bump=(m,v)=> String(v||"").split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && x!=="《》").forEach(t=> m[t]=(m[t]||0)+1);
-  models.forEach(sn=> (resultData[sn].details||[]).forEach(d=>{ totalReviews++; bump(gAdv,d["产品优势"]); bump(gProb,d["问题反馈"]); }));
-  const top = sceneTable.slice(0, 8);
-  const totalSceneF = sceneTable.reduce((s,x)=> s+(x.频次||0), 0) || 1;   // P-08:占比用1位小数,避免 42 vs 41 都四舍五入成20%却分"第一/第二"
-  const digest = top.map((r,i)=>{ const p = sceneProfile(resultData, r.大类, gAdv, gProb, totalReviews);
-    const isCatchall = /未归类用途/.test(r.大类);   // P-17/V3.2:兜底长尾合集,别给它编统一方案、改列举真实子用途
-    return `${i+1}. 场景【${r.大类}】 约占 ${(r.频次/totalSceneF*100).toFixed(1)}%（${r.频次}次）${isCatchall?"  ★【长尾合集类·非单一用途】:正文里别给它编统一需求方案,改为列举它内部2-3个最高频的真实子用途":""}
-   该场景【相对突出】的优点：${p.adv.join("、")||"（无）"}
-   该场景【相对突出】的问题：${p.prob.join("、")||"（无）"}
-   涉及软件：${p.sw.join("、")||"（无）"}
-   该场景几条真实评论摘录（供你提炼具体需求）：${p.exc.map(e=> "「"+e+"…」").join("  ")||"（无）"}`;
-  }).join("\n\n");
-  const prompt = `你是资深迷你电脑产品分析师。下面是 ${models.length} 款产品共 ${totalReviews} 条真实评论按【应用场景】分组：每个场景给了占比、该场景【相对突出】的优点/问题/软件、以及几条真实评论摘录。
-
-请写一份「应用场景总结」，纯中文，对标专业分析师的【具体颗粒度】（像"需要大硬盘扩展→快拆设计""游戏性能不足→支持 OCulink 外接显卡""4K播放卡顿→升级解码能力""噪音大→主动散热模式调节"这种具体的需求与方案）。结构：
-开头一句：汇总了 ${models.length} 款产品、共 ${totalReviews} 条评论。
-然后【按占比从高到低】每个主要场景一段：
-一、占比最高的是：XX场景，约占Y%，对应产品需求及解决方案
-1. <一句具体的用户需求/痛点> —— <针对它的具体产品功能/设计方案>
-2. <另一句具体需求> —— <方案>
-二、第二个场景……（往下覆盖给你的主要场景）
-结尾一句：占比较低的长尾场景，后续深入挖掘作为储备差异化方向。
-
-【硬性铁律】①每条先点出【一个具体的真实需求/痛点】（从该场景的突出优点/问题或评论摘录里提炼，要像"需要更多USB接口""4K视频卡顿""蓝牙老断连"这样具体），再给一个【具体可落地】的方案。②【需求侧严禁】把"体积小巧""性价比高""运行速度快"这种通用优点照搬当需求。③【方案侧严禁空壳】——方案必须落到一个【具体可改的硬件/接口/BIOS/配置点】（如"增加第二个M.2插槽""开放BIOS风扇曲线""换更厚均热板""支持OCuLink外接显卡"）；【绝不许】写"优化散热设计""优化散热系统""搭载高性能处理器""提升多任务能力""增强整体性能"这类动词+名词的空壳；若你只想得出这种空话，就回到该场景评论摘录里挑一个具体诉求重写。④【各场景不许雷同】：后面场景若需求和前面某段重复（如都写"NPU加速/外接GPU"），必须换该场景摘录里【独有】的诉求，实在没有就少写一条，绝不重复。⑤【遇到标了★长尾合集类的场景】：不要编统一需求方案，改成"该场景是…等小众用途的合集，主要包括：<列2-3个真实子用途>"。⑥每条只写一个需求、不要顿号堆多个；只能用我给的该场景数据/摘录、不许编造；百分比用我给的数字；格式"序号. 需求 —— 方案"，不要"用户需求：""解决方案："前缀。
-
-【各场景数据】（按占比从高到低）：
-${digest}
-
-【写完自查】输出前再过一遍每一条:方案有没有落到一个【具体的硬件/接口/BIOS/配置点】?有没有混进"优化散热设计/优化散热系统/提升整体性能/增强体验/搭载高性能处理器"这类空壳?有就【就地改成该场景摘录里的具体诉求】再输出。
-只输出正文，不要额外说明/markdown/代码块。`;
-  // V3.9.1:加重试——应用场景总结这条纯AI路不稳,一次失败/返空就别放弃,最多试3次(防 (9) 里整段缺失)
-  let out = "";
-  for(let _a=1; _a<=3 && (!out || out.length<20); _a++){
-    try{ out = String(await callAI(key, prompt, 180000)||"").replace(/^\`\`\`[a-z]*\n?/i,"").replace(/\`\`\`$/,"").trim(); }
-    catch(e){ if(_a>=3) break; await sleep(1500*_a); }   // V4.1:AI挂也别抛,走下面代码兜底
+/* V4.2:应用场景总结 —— ① 第一句列【真实品牌+款数】(不写评论数,避免和"按场景标签算的占比"打架误导);② 场景用【代码路由的10大类】(和饼图汇总一致,不再用老的另一套);③ 每个高占比场景【单独一次AI】写"需求→方案"(小批·聚焦·稳),需求从该场景真实问题/摘录提炼、方案落到具体硬件点;某场景AI失败就只给占比标题(不报错、不留note)。 */
+function sceneTagTo10(tag){ const r=codeRouteOne("应用场景", tag); return r? r.big : canonScene(tag); }
+function sceneProfile10(resultData, bigName){
+  const lProb={}, exc=[];
+  Object.keys(resultData||{}).forEach(sn=> (resultData[sn].details||[]).forEach(d=>{
+    const scenes=String(d["应用场景"]||"").split(/、|，|,|;|；/).map(x=>x.trim()).filter(Boolean);
+    if(scenes.some(t=> sceneTagTo10(t)===bigName)){
+      String(d["问题反馈"]||"").split(/、|，|,|;|；/).map(x=>x.trim()).filter(x=> x && x!=="《》").forEach(p=> lProb[p]=(lProb[p]||0)+1);
+      const txt=String(d["评论内容"]||"").replace(/\s+/g," ").trim();
+      if(txt.length>40 && exc.length<6) exc.push(txt.slice(0,160));
+    }
+  }));
+  return { probs: Object.entries(lProb).sort((a,b)=>b[1]-a[1]).slice(0,12).map(a=>`${a[0]}(${a[1]})`), exc };
+}
+/* V4.2:【痛点→方案】对照表——只在某场景 AI 真挂了才兜底用(主力还是AI根据真实数据现写)。需求仍来自真实问题、方案套这个表,保证那一段不空。 */
+const PROB_SOLUTION = [
+  [/无法开机|开不了机|启动固件|变砖|无法启动/, "优化电源/启动稳定性,加恢复按键降低变砖风险"],
+  [/死机|崩溃|重启|卡死|无响应/, "排查BIOS/驱动稳定性,提供一键系统恢复"],
+  [/风扇|噪音|散热|发热|过热|温度/, "开放BIOS风扇曲线调节 + 加厚均热板/主动散热模式"],
+  [/蓝牙|wi-?fi|wifi|网络|断网|以太网|断连/, "换更稳无线模块 + 加2.5G有线网口"],
+  [/4k|解码|视频卡顿|播放卡|流媒体卡/, "升级硬件解码能力(支持AV1/4K60)"],
+  [/卡顿|卡帧|跳帧|运行慢|性能差|性能不足|带不动|高强度游戏/, "提升性能释放 + 支持OCuLink外接显卡"],
+  [/内存.{0,4}(焊死|不可升级|无法升级|不足|不够)|不支持.{0,2}内存|单通道|内存插槽/, "提供可插拔SO-DIMM内存插槽/双通道"],
+  [/硬盘|固态|ssd|nvme|m\.?2|存储.{0,2}(不足|空间)|硬盘位|仓位/, "增加第二个M.2插槽 + 做快拆硬盘位"],
+  [/接口|usb|hdmi|端口|oculink|雷电|type-?c|dp接口/, "增加USB/HDMI接口数量、优化接口布局"],
+  [/显卡|gpu|vram|显存|外接显卡/, "支持OCuLink外接显卡扩展"],
+  [/屏幕|显示器|黑屏|分辨率|输出|乱码|睡眠|闪烁|无显示/, "排查显示输出兼容性,支持多屏稳定输出"],
+  [/音频|声音|扬声器|耳机|静电/, "增加前后置耳机孔 + 优化音频输出"],
+  [/电源|适配器|功率不足|电源键/, "换更可靠电源适配器、优化电源键位置"],
+  [/驱动|bios|预装|系统问题|兼容|恶意|间谍|授权|pin登录/, "提供干净系统镜像 + 完善驱动与BIOS更新"],
+  [/做工|质量|损坏|二手|缺陷|品控|耐用|包装|配件|鼠标|键盘|说明书|螺丝|壁挂/, "加强品控、改进包装与配件、优化拆装设计"],
+  [/售后|客服|客户服务/, "改善售后响应、完善服务渠道"],
+  [/性价比|价格|贵/, "优化配置定价、提升性价比"],
+];
+function probToSolution(prob){ const r=PROB_SOLUTION.find(x=> x[0].test(String(prob||""))); return r? r[1] : ""; }
+function sceneFallback(prof, K){   // 真AI失败时:真实高频问题 + 对照表方案
+  const lines=[];
+  for(const p of (prof.probs||[])){
+    const name=String(p).replace(/\(\d+\)\s*$/,"").trim();
+    const sol=probToSolution(name);
+    if(sol){ lines.push(`${lines.length+1}. ${name} —— ${sol}`); if(lines.length>=K) break; }
   }
-  // V4.1:代码兜底——AI 三次都写不出时,至少用数据生成「占比排序」正文,保证「应用场景总结」永远在、不再整段缺失
-  if(!out || out.length<20){
-    const ord=["一","二","三","四","五","六","七","八"];
-    const lines = top.map((r,i)=> `${ord[i]||(i+1)}、${i===0?"占比最高的是":"第"+(i+1)+"个场景是"}：${r.大类}，约占 ${(r.频次/totalSceneF*100).toFixed(1)}%（${r.频次}次）`);
-    out = `汇总了 ${models.length} 款产品、共 ${totalReviews} 条评论。\n\n`+lines.join("\n")+`\n\n（注：本次"需求→方案"正文由AI生成失败，已先给出各场景占比排序；可重跑补全。）\n占比较低的长尾场景，后续深入挖掘作为储备差异化方向。`;
+  return lines.join("\n");
+}
+async function buildSceneSummary(key, resultData, sceneGroups){
+  const models=Object.keys(resultData||{});
+  if(!models.length || !sceneGroups || !sceneGroups.length) return "";
+  const brands=[...new Set(models.map(m=> String(m).trim().split(/[\s_\-（(]/)[0]).filter(b=> b && b.length>=2))].slice(0,6);
+  const opening=`以下应用场景汇总了 ${brands.join("、")} 等 ${models.length} 款产品的用户评论，总结出以下应用场景占比`;
+  const m=new Map(); sceneGroups.forEach(g=> m.set(g.big,(m.get(g.big)||0)+g.count));
+  const scenes=[...m.entries()].map(([big,cnt])=>({big,cnt})).sort((a,b)=> b.cnt-a.cnt);
+  const total=scenes.reduce((s,x)=>s+x.cnt,0)||1;
+  const ord=["一","二","三","四","五","六","七","八","九","十"];
+  const top=scenes.filter((s,i)=> i<6 && s.cnt/total>=0.03);
+  // V4.2:串行一个个场景调AI(并发会把glm冲挂/超时)。AI主力(根据真实数据现写),真挂了才用对照表兜底;每场景打日志,能看出是写出来了还是挂了。
+  const parts=[];
+  for(let i=0;i<top.length;i++){
+    const s=top[i];
+    const pct=(s.cnt/total*100).toFixed(1);
+    const head=`${ord[i]||(i+1)}、${i===0?"占比最高的是":"第"+(i+1)+"个场景是"}：${s.big}，约占 ${pct}%（${s.cnt}次），对应产品需求及解决方案`;
+    const K = i===0?6 : (i<=2?4:2);
+    const prof=sceneProfile10(resultData, s.big);
+    if(!prof.probs.length && !prof.exc.length){ try{logLine(`【场景"${s.big}"】无该场景明细数据,只给占比`,"warn");}catch(_){} parts.push(head); continue; }
+    const prompt=`迷你电脑的「${s.big}」使用场景。下面是该场景下用户反馈的【真实问题(带次数)】和【真实评论摘录】:\n问题:${prof.probs.join("、")||"(无)"}\n摘录:${prof.exc.map(e=>"「"+e+"」").join(" ")||"(无)"}\n\n请写【最多 ${K} 条】"需求→方案",每行格式"序号. 具体需求/痛点 —— 具体产品方案"。铁律:① 需求从上面真实问题/摘录提炼(像"4K视频卡顿""USB接口不够""内存焊死无法升级");② 方案必须落到【具体硬件/接口/BIOS/设计点】(如"增加第二个M.2插槽""开放BIOS风扇曲线""支持OCuLink外接显卡""做快拆硬盘位"),【严禁】"优化散热/提升性能/增强体验/搭载高性能处理器"这类空壳;③ 真实问题不够就少写几条,绝不编造。只输出那几行"序号. 需求 —— 方案",不要任何别的字。`;
+    let body="", err="";
+    for(let a=1;a<=2 && !body;a++){
+      try{ body=String(await callAI(key,prompt,120000,1500)||"").replace(/^\`\`\`[a-z]*\n?/i,"").replace(/\`\`\`$/,"").trim(); }
+      catch(e){ err=e&&e.message||"未知"; if(a>=2) break; await sleep(1500); }
+    }
+    if(body){ try{logLine(`【场景"${s.big}"】AI写了 ${body.split(/\n/).filter(x=>x.trim()).length} 条需求→方案`,"ok");}catch(_){}
+    } else { body=sceneFallback(prof, K); try{logLine(`【场景"${s.big}"】AI没写出(${err||"返回空"}),用对照表兜底 ${body? body.split(/\n/).length+"条":"0条"}`,"warn");}catch(_){} }
+    parts.push(body ? head+"\n"+body : head);
   }
-  out = out.replace(/\s*([一二三四五六七八九十]{1,3}[、.．]\s*(?:占比|第))/g, "\n\n$1")
-           .replace(/\s*(\d+\s*[.．]\s)/g, "\n$1").replace(/\n{3,}/g, "\n\n").trim();
-  return out;
+  const ending="其他占比较低的长尾场景，后续深入挖掘作为储备差异化方向。";
+  return [opening, "", parts.join("\n\n"), "", ending].join("\n").replace(/\n{3,}/g,"\n\n").trim();
 }
 /* V1.6:把某列的真实标签【按 FIELD_CATS 规则归到大类】,返回 [{大类,描述,频次,占比,细分}] 按频次降序。
    纯代码、不调 AI;先匹配到先归;没匹配的进兜底大类(re:null),所以没有"其他"。 */
@@ -1151,7 +1181,7 @@ const SOFTWARE_DESC = [
   [/^windows$|windows专业版|windows 专业版|win专业版/i, "微软桌面操作系统,迷你电脑常见预装系统"],
   [/ubuntu/i, "主流 Linux 发行版,用于开发/服务器/替代 Windows"],
   [/debian/i, "稳定型 Linux 发行版,常用于服务器与自建服务"],
-  [/fedora|mint|centos|alma|arch|manjaro|opensuse|q4os|\blinux\b/i, "Linux 发行版,用于双系统/服务器/家庭实验室"],
+  [/fedora|mint|centos|alma|arch ?linux|manjaro|opensuse|q4os|\blinux\b/i, "Linux 发行版,用于双系统/服务器/家庭实验室"],
   [/proxmox/i, "开源服务器虚拟化平台,用于跑多台虚拟机/家庭实验室"],
   [/\bdocker\b/i, "容器化工具,用于打包部署应用/媒体服务"],
   [/virtualbox|vmware|\bkvm\b|hyper-?v|portainer|\blxc\b/i, "虚拟化/容器工具,用于运行多系统、开发测试"],
@@ -1555,16 +1585,40 @@ async function buildTopGroups(key, tb){
     try{ const h=await hybridDimension(key,d,tb[d]||[]); res[d]=h.groups; res._newWords[d]=h.newWords; }
     catch(e){ res[d]=(tb[d]||[]).map(([n,k])=>({big:d,sub:n,members:[[n,k]],count:k})); res._newWords[d]=[]; }
   }));
+  postprocessSoftware(res);   // V4.2:相关软件→拆游戏到独立「游戏」组 + 过滤垃圾/品牌/泛词 + Linux各发行版并一行 + 软件表只留count≥2
+  ["产品优势","问题反馈"].forEach(d=>{ res[d]=(res[d]||[]).filter(g=> g.sub && !/^[\/\\\s]+$/.test(String(g.sub))); });   // V4.2:滤掉 "/"、空 垃圾子项
   return res;
 }
-/* V4.1:描述列【彻底不用AI·全有依据·不瞎写】,照搬 V3.5 那套秒出逻辑:
-   · 相关软件 → 内置功能词典(事实)softwareDesc;查不到【不留空不编造】,老实写"原文仅提及名称、未描述用途";再把被合并进来的【真实变体写法(二级目录)】标出来"(含X、Y写法合并)"。
+/* V4.2:游戏识别(代码·不靠AI)——《》括号 + 已知游戏名清单(覆盖本数据里没带《》、被AI错丢进系统类的)+ 游戏平台。宁多勿少地把游戏从软件里摘干净。 */
+const GAME_RE = /《.+》|地狱潜者|helldivers|方舟突袭|raceroom|赛车房间|marvel ?rivals|\brivals\b|vpx|弹球|pinball|\bpz\b|project ?zomboid|poppy|geometry ?dash|palworld|幻兽帕鲁|\brust\b|fallout|辐射|\bconan\b|v ?rising|lethal ?company|rimworld|环世界|7 ?days ?to ?die|s\.?t\.?a\.?l\.?k|潜行者|\bapex\b|cities ?skyline|城市.{0,2}天际线|retroarch|warframe|星际战甲|求生之路|left ?4 ?dead|stanley|斯坦利|cyberpunk|赛博朋克|crimson|猩红沙漠|minecraft|我的世界|the ?sims|模拟人生|roblox|csgo|cs2|反恐精英|counter.?strike|fortnite|堡垒之夜|call ?of ?duty|使命召唤|overwatch|守望先锋|elder ?scrolls|上古卷轴|skyrim|mechwarrior|clone ?hero|克隆英雄|genshin|原神|桥梁建造|stardew|星露谷|真实飞行|kingdom ?come|天国.?拯救|world ?of ?tanks|坦克世界|red ?dead|荒野大镖客|world ?of ?warcraft|魔兽世界|path ?of ?exile|流放之路|圣剑传说|hunt:? ?showdown|war ?thunder|战争雷霆|diablo|暗黑破坏神|\bpubg\b|绝地求生|tarkov|逃离塔科夫|valorant|无畏契约|arcade ?paradise|\bsteam\b|\bepic\b|xbox|game ?pass/i;
+function isGameName(n){ return GAME_RE.test(String(n||"")); }
+const SW_GENERIC = /^(系统工具|专业软件|媒体播放|ai ?模型|视频编辑软件|pos ?系统|3d ?cad ?程序|游戏|软件|工具|app|应用)$/i;
+function isLinuxDistro(n){ n=String(n||""); return /linux|ubuntu|debian|fedora|\bmint\b|centos|alma|manjaro|opensuse|q4os|bazzite|talos|nixos|pop.?os|endeavour|garuda/i.test(n) && !/retroarch|windows/i.test(n); }
+function postprocessSoftware(res){
+  const sw = res["相关软件"]||[];
+  const games=[], soft=[];
+  sw.forEach(g=>{ (g.big==="娱乐游戏" || isGameName(g.sub)) ? games.push(g) : soft.push(g); });
+  res["游戏"] = games.sort((a,b)=> b.count-a.count);                    // 游戏单独成组,全部保留
+  let s = soft.filter(g=>{ const n=String(g.sub||"").trim();
+    if(!n || /^[\/\\\s]+$/.test(n)) return false;                       // 垃圾(/、空)
+    if(typeof isNonSoftware==="function" && isNonSoftware(n)) return false; // 品牌/接口/型号/系统自带功能(复用V3.5)
+    if(/^(bosgame|acemagic|kamrui|nipogi|aoostar|trigkey)/i.test(n)) return false; // 补品牌
+    if(SW_GENERIC.test(n)) return false;                                // 纯泛词
+    return true;
+  });
+  const lin=s.filter(g=>isLinuxDistro(g.sub)), oth=s.filter(g=>!isLinuxDistro(g.sub));   // Linux各发行版并一行
+  if(lin.length){ const members=[].concat(...lin.map(g=>g.members||[])); const count=lin.reduce((a,g)=>a+g.count,0); oth.push({big:"系统与驱动", sub:"Linux 发行版", members, count}); }
+  res["相关软件"] = oth.filter(g=> g.count>=2).sort((a,b)=> b.count-a.count);   // 软件表只留 count≥2(砍长尾)
+  return res;
+}
+/* V4.2:描述列——用户原则【范本/词典只兜底,AI 是主力】:
+   · 相关软件 → 优先用 AI 现写的 g.aiDesc(genSoftwareDesc 根据真实软件名生成);AI没写出才退【内置功能词典 softwareDesc】;再没有才"原文仅提及名称、未描述用途"。后面始终带真实变体二级目录"(含X、Y写法合并)"。
    · 产品优势/问题反馈 → 直接填"二级目录"=归到这条下面的真实原词(members),纯数据。 */
 function fillDescriptions(dim, groups){
   (groups||[]).forEach(g=>{
     const mem=[...new Set((g.members||[]).map(m=>m[0]).filter(Boolean))];
     if(dim==="相关软件"){
-      let desc = softwareDesc(g.sub) || "（原文仅提及名称，未描述用途）";
+      let desc = g.aiDesc || softwareDesc(g.sub) || "（原文仅提及名称，未描述用途）";   // AI主力 → 词典兜底 → 老实说
       const variants = mem.filter(v=> v!==g.sub);                       // 被并进来的其它真实写法
       if(variants.length) desc += `（含 ${variants.slice(0,3).join("、")}${variants.length>3?" 等":""} 写法合并）`;
       g.desc = desc;
@@ -1572,6 +1626,19 @@ function fillDescriptions(dim, groups){
       g.desc = mem.join("、");   // 二级目录:归到这条下面的真实原词
     }
   });
+}
+/* V4.2:相关软件描述【AI 主力】——一次批量让 AI 给软件写功能(小集合·count≥2 后只剩~20-30个,不会截断);失败/没覆盖到的项 g.aiDesc 留空,由 fillDescriptions 退词典兜底。 */
+async function genSoftwareDesc(key, groups){
+  const subs=[...new Set((groups||[]).map(g=>g.sub).filter(Boolean))];
+  if(!subs.length) return;
+  const prompt=`给下面每个软件/系统/工具写【一句】主要功能(它是什么、用来干啥),≤25字、纯中文、客观准确,不确定的就别写那项。只输出严格JSON对象{"名称":"功能", ...},不要解释、不要markdown:\n${subs.join("\n")}`;
+  let map=null;
+  for(let a=1;a<=2 && !map;a++){
+    try{ let raw=String(await callAI(key,prompt,120000,3000)||"").replace(/\`\`\`json/gi,"").replace(/\`\`\`/g,""); const s=raw.indexOf("{"),e=raw.lastIndexOf("}"); map=(s>=0&&e>s)?JSON.parse(raw.slice(s,e+1)):null; }
+    catch(err){ if(a>=2) map={}; else await sleep(1200); }
+  }
+  const norm=s=>String(s||"").replace(/\s+/g,"").toLowerCase(); const nmap={}; for(const k in (map||{})) nmap[norm(k)]=map[k];
+  (groups||[]).forEach(g=>{ g.aiDesc = (map&&map[g.sub]) || nmap[norm(g.sub)] || ""; });
 }
 
 /* ---------- 导出 Excel(按规范样本格式:顶部汇总 + 明细) ---------- */
@@ -1581,7 +1648,7 @@ $("downloadBtn").onclick = async ()=>{
   // V1.1:一个「总结」sheet —— 应用场景总结 + 应用场景汇总表 + 软件提及统计(上下排)
   if(resultSceneSummary || resultTopGroups || resultTopBlocks || (resultSceneTable&&resultSceneTable.length) || (resultAdvTable&&resultAdvTable.length) || (resultProbTable&&resultProbTable.length) || (resultSoftwareStats&&resultSoftwareStats.length)){
     const ws = wb.addWorksheet("总结");
-    ws.columns = [{width:26},{width:40},{width:12},{width:30},{width:46}];   // V3.1:col5(软件次数)加宽,col4(细分/明细)适中
+    ws.columns = [{width:22},{width:18},{width:9},{width:84},{width:12}];   // V4.2:col4(描述/二级目录=长文字)大幅加宽→内容1~2行放下、行高骤降;col3=次数窄
     const sectionTitle = (text)=>{
       const r = ws.addRow([text]);
       ws.mergeCells(r.number,1,r.number,5);
@@ -1680,7 +1747,7 @@ $("downloadBtn").onclick = async ()=>{
       const descBlock = (title, header, groups)=>{
         if(!groups || !groups.length) return;
         ws.addRow([]); sectionTitle(title);
-        const h = ws.addRow([header[0],header[1],header[2],header[3],""]); [1,2,3,4].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
+        const h = ws.addRow([header[0],header[1],header[2],header[3],""]); [1,2,3,4].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF2F4F7"}}; c.alignment={horizontal:"center",vertical:"middle"}; });
         const m=new Map();
         groups.forEach(g=>{ if(!m.has(g.big)) m.set(g.big,{big:g.big,count:0,rows:[]}); const o=m.get(g.big); o.count+=g.count; o.rows.push(g); });
         const bigs=[...m.values()].sort((a,b)=> b.count-a.count);
@@ -1694,11 +1761,12 @@ $("downloadBtn").onclick = async ()=>{
             row.getCell(2).alignment={vertical:"middle",wrapText:true};
             row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
             row.getCell(4).alignment={vertical:"middle",wrapText:true};
+            for(let c=1;c<=4;c++){ const cell=ws.getCell(row.number,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"thin",color:{argb:"FFEDEDED"}}}); }   // 每行细分隔
           });
           const end=ws.rowCount;
           if(end>start) ws.mergeCells(start,1,end,1);
-          ws.getCell(start,1).font={bold:true}; ws.getCell(start,1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
-          for(let c=1;c<=4;c++){ const cell=ws.getCell(end,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"medium",color:{argb:"FFBBBBBB"}}}); }
+          ws.getCell(start,1).font={bold:true}; ws.getCell(start,1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF2F4F7"}};
+          for(let c=1;c<=4;c++){ const cell=ws.getCell(end,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"thin",color:{argb:"FFCBD5E1"}}}); }   // 大类之间细分隔(浅)
         });
         const dataLast=ws.rowCount; try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
       };
@@ -1709,29 +1777,31 @@ $("downloadBtn").onclick = async ()=>{
         groups.forEach(g=>{ if(!m.has(g.big)) m.set(g.big,{big:g.big,total:0,subs:[]}); const o=m.get(g.big); o.total+=g.count; o.subs.push([g.sub,g.count]); });
         const bigs=[...m.values()].sort((a,b)=> b.total-a.total);
         ws.addRow([]); sectionTitle(title);
-        const h=ws.addRow([header[0],header[1],header[2],""]); [1,2,3].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF0F0F0"}}; c.alignment={horizontal:"center"}; });
+        const h=ws.addRow([header[0],"",header[1],header[2]]); ws.mergeCells(h.number,1,h.number,2); [1,3,4].forEach(ci=>{ const c=h.getCell(ci); c.font={bold:true}; c.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFF2F4F7"}}; c.alignment={horizontal:"center",vertical:"middle"}; });
         const dataFirst=ws.rowCount+1;
         bigs.forEach(b=>{
           const list=b.subs.slice().sort((x,y)=> y[1]-x[1]).map(s=> `${s[0]}(${s[1]})`).join("、");
-          const row=ws.addRow([ b.big, b.total, list, "" ]);
-          row.getCell(1).font={bold:true}; row.getCell(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFEAF1FB"}};
-          row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
-          row.getCell(2).alignment={horizontal:"center",vertical:"middle"};
-          row.getCell(3).alignment={vertical:"middle",wrapText:true};
-          for(let c=1;c<=3;c++){ const cell=ws.getCell(row.number,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"thin",color:{argb:"FFDDDDDD"}}}); }
+          const row=ws.addRow([ b.big, "", b.total, list ]);   // 大类|(合并)|次数|二级目录(宽列)
+          ws.mergeCells(row.number,1,row.number,2);
+          row.getCell(1).font={bold:true}; row.getCell(1).alignment={horizontal:"center",vertical:"middle",wrapText:true};
+          row.getCell(3).alignment={horizontal:"center",vertical:"middle"};
+          row.getCell(4).alignment={vertical:"middle",wrapText:true};
+          for(let c=1;c<=4;c++){ const cell=ws.getCell(row.number,c); cell.border=Object.assign({}, cell.border, {bottom:{style:"thin",color:{argb:"FFE3E3E3"}}}); }
         });
-        const dataLast=ws.rowCount; try{ ws.addConditionalFormatting({ ref:`B${dataFirst}:B${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
+        const dataLast=ws.rowCount; try{ ws.addConditionalFormatting({ ref:`C${dataFirst}:C${dataLast}`, rules:[{type:"dataBar",gradient:false,cfvo:[{type:"num",val:0},{type:"max"}],color:{argb:"FF63BE7B"}}] }); }catch(e){}
       };
       if(resultTopGroups){
         const tg = resultTopGroups;
         // ① 应用场景:只要【大类·次数·占比】一个表(给饼图)。V3.9.1:按用户要求删掉"二级小类明细"那块。
         const sceneBig = toBigList(tg["应用场景"]);
-        flatBlock("应用场景汇总（大类，选「大类」+「次数」两列插饼图）", sceneBig.map(b=>[b.big,b.count]));
+        flatBlock("应用场景汇总", sceneBig.map(b=>[b.big,b.count]));
         // ② 产品优势 / ③ 问题反馈:大类=洞察、二级目录=该大类下全部真实原词(带次数),一个大类一行——纯数据、不冗余、0编造
-        bigDigestBlock("产品优势汇总", ["优势类别","次数","具体优势（用户真实原话·按次数）"], tg["产品优势"]);
-        bigDigestBlock("问题反馈汇总", ["问题类别","次数","具体问题（用户真实原话·按次数）"], tg["问题反馈"]);
-        // ④ 相关软件:类别→名称→次数→功能描述(内置功能词典事实 + 真实变体二级目录 + 查不到老实说)
-        descBlock("软件提及统计（相关软件）", ["软件类别","软件名称","提及次数","主要功能描述"], tg["相关软件"]);
+        bigDigestBlock("产品优势汇总", ["优势类别","次数","具体优势"], tg["产品优势"]);
+        bigDigestBlock("问题反馈汇总", ["问题类别","次数","具体问题"], tg["问题反馈"]);
+        // ④ 相关软件(已拆掉游戏、过滤垃圾/品牌/泛词、Linux合并、count≥2):类别→名称→次数→功能描述
+        descBlock("软件提及统计", ["软件类别","软件名称","提及次数","主要功能描述"], tg["相关软件"]);
+        // ⑤ V4.2:游戏单独成表(游戏名|提及次数|占比),不再混进软件
+        if(tg["游戏"] && tg["游戏"].length) flatBlock("游戏提及统计", tg["游戏"].map(g=>[g.sub, g.count]), "游戏名称");
       } else {
         // 退化:聚类失败时,用原始加总扁平显示(不丢数据)
         const tb = resultTopBlocks;
