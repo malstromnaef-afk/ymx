@@ -106,7 +106,7 @@
         </select>
       </div>
     </div>
-    <div class="hint">浏览器直连（<b>无需 proxy.py</b>）。<b>⚠️ 两家 Key 不通用：</b>选 <b>deepseek-*</b> 填 <a href="https://platform.deepseek.com/api_keys" target="_blank">DeepSeek 官方 Key</a>（sk- 开头）；选 <b>glm-*</b> 填 <a href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank">智谱 Key</a>。Key 仅存本机浏览器。<b>要最准/治瞎编用 deepseek-v4-pro；量大省钱用 glm-4.5-air。</b></div>
+    <div class="hint">浏览器直连（<b>无需 proxy.py</b>）。<b>⚠️ 两家 Key 不通用：</b>选 <b>deepseek-*</b> 填 <a href="https://platform.deepseek.com/api_keys" target="_blank">DeepSeek 官方 Key</a>（sk- 开头）；选 <b>glm-*</b> 填 <a href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank">智谱 Key</a>。Key 仅存本机浏览器。<b>语言：纯中文直接分析；英语、德语、法语、西班牙语、意大利语、葡萄牙语、日语会先翻译成简体中文；中外文混合时保留中文、只翻译外文部分。</b><b>要最准/治瞎编用 deepseek-v4-pro；量大省钱用 glm-4.5-air。</b></div>
     <div class="key-saved" id="keySaved">✓ Key 已保存到本地</div>
   </div>
 
@@ -274,7 +274,7 @@ function cleanSheet(ws){
     s = s.replace(/(^|\s)报告($|\s)/g," ");
     return s.replace(/\s+/g," ").trim();
   };
-  const reviews = [];
+  const reviews = [], sourceRows = [];
   for(let r=1;r<rows.length;r++){
     const parts=[];
     contentCols.forEach(c=>{
@@ -287,9 +287,10 @@ function cleanSheet(ws){
     });
     if(parts.length){
       let merged = cleanCell(parts.join(" "));
-      if(merged && !isJunkReview(merged)) reviews.push(merged);
+      if(merged && !isJunkReview(merged)){ reviews.push(merged); sourceRows.push(r+1); }
     }
   }
+  reviews._sourceRows = sourceRows;   // 保留原 Excel 行号，导出时按原行回填，不删行/不乱序
   return reviews;
 }
 
@@ -313,6 +314,7 @@ function cleanReviewCell(v){
   s = s.replace(/\s*\d+(\.\d)?\s*分（满分 5 分）\s*/g," ");
   return s.replace(/\s+/g," ").trim();
 }
+
 /* V2.7:扫表头找「评论内容」列(表头归一化去空格+别名正则)→ 返回【清洗+去垃圾】后的评论数组。
    V4.1:支持【多个"评论内容"列】——同一行的多列内容按顺序拼接成一条评论(总条数不变,只是每条把多列合起来)。
    没找到列返回 null(主循环退回爬虫清洗);找到列但全空返回 [](主循环据此报"该列为空")。 */
@@ -327,32 +329,35 @@ function readReviewColumn(ws){
     if(found.length){ hr=r; cols=found; break; }
   }
   if(hr < 0) return null;
-  // V4.1:多个"评论内容"列时,先剔除【整列绝大多数是URL/空】的列(爬虫常把链接也命名成"评论内容",那是链接列不是正文列)。
+  // V4.3:无论一个还是多个"评论内容"列，都先识别【整列绝大多数是URL】的假正文列。
   //   判据:该列非空单元格里 ≥60% 是纯URL → 认定为链接列、丢弃。只保留真正含评论正文的列,再拼接。
-  if(cols.length>1){
+  {
     const isUrlCell = v=>{ const s=String(v==null?"":v).trim(); return /^https?:\/\//i.test(s) && s.replace(/https?:\/\/\S+/gi,"").trim().length<5; };
     const textCols = cols.filter(ci=>{
       let nonEmpty=0, urlCnt=0;
       for(let r=hr+1; r<rows.length; r++){ const v=(rows[r]||[])[ci]; if(v!=null && String(v).trim()){ nonEmpty++; if(isUrlCell(v)) urlCnt++; } }
-      return nonEmpty>0 && urlCnt/nonEmpty < 0.6;   // URL占比<60%才算真正文列
+      return nonEmpty>0 && urlCnt/nonEmpty < 0.6;
     });
     if(textCols.length && textCols.length<cols.length){
       try{ logLine(`识别到 ${cols.length} 个「评论内容」列,其中 ${cols.length-textCols.length} 个是链接列(已剔除),用 ${textCols.length} 个正文列`, "ok"); }catch(e){}
       cols = textCols;
     }else if(textCols.length===cols.length){
-      try{ logLine(`识别到 ${cols.length} 个「评论内容」列 → 同一行按顺序拼接成一条评论`, "ok"); }catch(e){}
+      if(cols.length>1) try{ logLine(`识别到 ${cols.length} 个「评论内容」列 → 同一行按顺序拼接成一条评论`, "ok"); }catch(e){}
     }else{
-      cols = textCols.length ? textCols : cols;   // 万一全被判成链接列,退回原样(不至于清空)
+      // 全部“评论内容”列都是链接时，返回 null，让主流程改走 cleanSheet 从 a-size-base/cr-original-review-content 等爬虫列提取正文。
+      try{ logLine("识别到的「评论内容」列全部是链接，自动改用爬虫正文列清洗", "warn"); }catch(e){}
+      return null;
     }
   }
-  const reviews = [];
+  const reviews = [], sourceRows = [];
   for(let r=hr+1; r<rows.length; r++){
     const row = rows[r]||[];
     // V4.1:同行多列拼接——各列内容清洗后用换行连接(只保留非空段),再整体去垃圾
     const parts = cols.map(ci=> cleanReviewCell(row[ci])).filter(Boolean);
     const s = parts.join("\n");
-    if(s && !isJunkReview(s)) reviews.push(s);
+    if(s && !isJunkReview(s)){ reviews.push(s); sourceRows.push(r+1); }
   }
+  reviews._sourceRows = sourceRows;   // 保留原 Excel 行号，空评论/链接行只跳过 AI，导出时仍保留原行
   return reviews;
 }
 
@@ -399,12 +404,35 @@ async function callAI(key, prompt, timeoutMs, maxTokens, _attempt){
   return data.choices[0].message.content;
 }
 
-/* 本地判断:这条评论是否需要翻译(英文→需要)。中文字远少于英文字母即判为英文,纯本地、瞬时、不耗 API */
-function needsTranslate(s){
+/* V4.1 多语言路由(纯本地、不耗 API):
+   - 纯中文直接分析，不翻译；中外文混合时保留中文、翻译外文部分。
+   - 英/德/法/西/意/葡都以拉丁字母为主，本地只需判定「拉丁语言」，具体语种交给翻译模型识别。
+   - 日语用平假名/片假名判定；日文中的汉字不应被误当成中文而跳过翻译。 */
+function detectReviewLanguage(s){
   s = String(s||"");
   const cjk = (s.match(/[一-鿿]/g)||[]).length;
-  const latin = (s.match(/[A-Za-z]/g)||[]).length;
-  return latin >= 4 && cjk < latin * 0.2;
+  const kana = (s.match(/[぀-ヿｦ-ﾟ]/g)||[]).length;
+  const latin = (s.match(/[A-Za-zÀ-ɏ]/g)||[]).length;
+  if(kana >= 2) return cjk > 0 || latin >= 4 ? "mixed" : "ja";
+  if(cjk > 0 && latin >= 4) return "mixed";
+  if(latin >= 4 && cjk < Math.max(2, latin * 0.2)) return "latin";
+  if(cjk > 0) return "zh";
+  return "other";
+}
+function needsTranslate(s){
+  const lang = detectReviewLanguage(s);
+  return lang === "latin" || lang === "ja" || lang === "mixed";
+}
+
+/* 翻译后外语残留检查:技术名称/品牌/型号允许保留，普通外语句子触发一次严格重译。 */
+const TRANSLATION_KEEP_RE = /\b(?:windows|win\s?1[01]|linux|ubuntu|debian|fedora|bazzite|cachyos|android|macos|chrome\s?os|usb(?:-?[a-z])?|hdmi|displayport|wifi|wi-?fi|bluetooth|cpu|gpu|npu|ram|rom|ssd|nvme|bios|soc|pcie|oculink|directx|vulkan|opencl|ryzen|radeon|intel|amd|nvidia|geforce|minisforum|acemagic|kamrui|gmktec|geekom|plex|steam|office|photoshop|proxmox|docker|haos|home\sassistant|lm\s?studio|llm|gpt|qwen|gemma|fps|fsr|egpu|nas|kvm)\b/gi;
+const OBVIOUS_FOREIGN_WORD_RE = /\b(?:and|then|but|because|with|without|this|that|very|good|bad|parfait|bonjour|merci|avec|pour|mais|très|und|aber|nicht|sehr|mit|ohne|dann|weil|perfekt|muy|pero|para|con|sin|porque|perfecto|che|bella|sorpresa|molto|bene|senza|perché|perfeito|muito|com|sem)\b/i;
+function hasUntranslatedForeign(s){
+  const t = String(s||"").replace(TRANSLATION_KEEP_RE," ").replace(/https?:\/\/\S+/gi," ");
+  if(/[぀-ヿｦ-ﾟ]{2,}/.test(t)) return true;
+  if(OBVIOUS_FOREIGN_WORD_RE.test(t)) return true;
+  const words = t.match(/[A-Za-zÀ-ɏ]{3,}/g)||[];
+  return words.filter(w=> !/^[A-Z]{2,}$/.test(w) && !/\d/.test(w)).length >= 4;
 }
 
 /* V4.0:只在【真·鉴权/账户】错误时中止整个流程。百炼里模型ID不对会返回 InvalidParameter/Model not exist(400),
@@ -415,13 +443,22 @@ function isAuthError(msg){
   return /\b401\b|\b403\b|InvalidApiKey|invalid.?api.?key|incorrect api key|Unauthorized|AccessDenied|鉴权|无权|Arrearage|欠费|账户余额|无效的?\s?api/i.test(msg);
 }
 
-/* 英文评论:单独一次"纯翻译"调用(翻译是 flash 最擅长的,分开做最稳)。鉴权错抛 __abort,其它失败退回原文 */
+/* 英/德/法/西/意/葡/日评论:单独一次纯翻译调用。鉴权错抛 __abort,其它失败退回原文。 */
 async function translateReview(key, review){
   try{
-    const out = await callAI(key, `把下面这条英文用户评论整条翻成简体中文。产品名、型号、软件名、游戏名、系统名、接口名（如 KAMRUI、Ryzen 4300U、HDMI、Windows 11、Plex 等）保留原文。只输出翻译后的中文正文，不要引号、不要解释、不要 markdown。\n\n评论：\n${review}`);
+    const out = await callAI(key, `自动识别下面用户评论的语言（可能是中文与英语、德语、法语、西班牙语、意大利语、葡萄牙语或日语中的一种或多种混合），将整条评论统一成简体中文。原文已经是中文的部分保持原意和原顺序，只翻译其中的外语句子或片段。必须逐句忠实翻译，不得总结、改写、省略或增加信息。产品名、品牌、型号、软件名、游戏名、操作系统名和接口名（如 KAMRUI、Ryzen 4300U、HDMI、Windows 11、Plex 等）保留原文。除这些专有名称外，普通外语词句必须全部翻译成中文，不能残留。只输出处理后的中文正文，不要引号、不要解释、不要 markdown。\n\n评论：\n${review}`);
     let t = String(out||"").replace(/^```[a-z]*\n?/i,"").replace(/```$/,"").trim();
     // V4.1:识别AI"推脱话"——原文只有链接/无实质内容时,模型常回"您只提供了链接、请提供原文…"这类话。这不是翻译结果,别当评论存进去→退回原文(原文若纯URL已被 isJunkReview 上游拦掉)
     if(/您?只提供了链接|没有提供(评论|具体)|请提供.{0,6}(原文|英文|内容)|如果您能提供|没有显示任何评论内容|无法(翻译|看到|访问)/.test(t)) return review;
+    for(let qualityTry=1; t && hasUntranslatedForeign(t) && qualityTry<=2; qualityTry++){
+      try{
+        logLine(`检测到翻译后仍有普通外语残留，严格重译 ${qualityTry}/2…`,"warn");
+        const retry = await callAI(key, `译文仍残留了普通外语。请重新对【原文】逐句完整翻译成简体中文，不得参考之前译文，不得总结、改写、省略或增加信息。已有中文保持原意；仅品牌、型号、软件、游戏、操作系统、接口和技术名词保留原文；其他英语、德语、法语、西班牙语、意大利语、葡萄牙语、日语必须全部翻译。只输出处理后的正文。\n\n原文：\n${review}`,90000,8192);
+        const rt = String(retry||"").replace(/^```[a-z]*\n?/i,"").replace(/```$/," ").trim();
+        if(rt) t=rt;
+      }catch(e){ /* 本次质量重译失败时继续下一次，不丢评论 */ }
+    }
+    if(t && hasUntranslatedForeign(t)) logLine("该条重译两次后仍检测到普通外语残留，已保留译文并标记日志，请复核。","err");
     return t || review;
   }catch(e){
     if(isAuthError(e.message)){ const er=new Error(e.message); er.__abort=true; er.__auth=true; throw er; }
@@ -429,7 +466,7 @@ async function translateReview(key, review){
   }
 }
 
-/* V2.7:确定性去编造校验——抽出的软件名必须在【英文原文 ∪ 中文译文】里(去空格、小写)真实出现,否则剔除。
+/* V2.7:确定性去编造校验——抽出的软件名必须在【外语原文 ∪ 中文译文】里(去空格、小写)真实出现,否则剔除。
    对 Windows/Chromebook 这类"迷你电脑语境脑补默认装系统"的高发编造词从严:原文译文里没有 win/windows/微软 等字样就剔。
    注意:只用原文+译文做底(译文里软件名按提示要求保留原文),不会误删翻译改写过的真实软件名;短名(<2字)宁可保留不误删。 */
 function verifySoftware(swField, review, text){
@@ -451,7 +488,7 @@ function verifySoftware(swField, review, text){
 
 /* ---------- 二筛:从(已是中文的)评论里如实提取四个字段 ---------- */
 function buildPrompt(review){
-  return `你是亚马逊迷你电脑评论分析助手。请只依据下面这条评论的真实内容，提取五个字段——【只抽原文真正提到的，宁可留空也绝不编造】。
+  return `你是亚马逊迷你电脑评论分析助手。请只依据下面这条评论的真实内容，提取六个字段——【只抽原文真正提到的，宁可留空也绝不编造】。
 
 【先读全·后文为准】先把整条评论(含追评/补充/客服后续)读完，在心里判断用户的【最终态度与核心意图】；若有追评或后文反转，【一律以后文最终结论为准】，别被前半段带偏。(核心意图只帮你判断、不必输出)
 【正负隔离】产品优势只收【正面认可】、问题反馈只收【负面/故障/不满】，两边的信息绝不互串。
@@ -459,21 +496,23 @@ function buildPrompt(review){
 
 【最高铁律：绝不编造】只提取原文真实提到的；没提到就留空 ""。严禁推测、脑补、套模板、凑标准词。
 
-【宁缺毋滥·敢留空】只抽你在原文里【真正读到】的；原文没有的绝不硬凑。多数评论每个字段只有 0~2 个标签，四个字段大量为空是正常的、正确的——【留空永远比编一个更对】。【每个字段是一个数组,一个数组元素只放一个标签;有几个标签就放几个元素,绝不要把多个标签塞进同一个元素、绝不用空格连接多个标签】(错误示例:["价格划算 性能好 体积小"];正确:["价格划算","性能好","体积小"])。
+【完整提取·禁止限量】必须先逐句读完正文、追评和补充内容，再统一提取；只抽你在原文里【真正读到】的，原文没有的绝不硬凑。原文明说多少项就必须提取多少项，【不得限制每个字段的标签数量】；同一句包含多个不同事实时必须分别提取，每个字段输出前都回看全文补漏。【每个字段是一个数组,一个数组元素只放一个标签;有几个标签就放几个元素,绝不要把多个标签塞进同一个元素、绝不用空格连接多个标签】(错误示例:["价格划算 性能好 体积小"];正确:["价格划算","性能好","体积小"])。
 
 【标签要求】一律简体中文。
 　·【软件 / 系统 / 游戏名 例外——直接照原文【完整】提取,绝不简写、绝不缩写、绝不翻译、绝不压缩,原文多长就写多长】(如 Windows 11、Ubuntu、Home Assistant、Stable Diffusion、Plex Media Server、Visual Studio Code、《赛博朋克2077》)。这条优先级最高,不受下面"精简/压缩"约束。
-　·【其余三个字段(应用场景 / 产品优势 / 问题反馈)的标签要精简——概括成 2~6 字的核心词,能省就省,绝不照抄长句;任何标签超过 8 个汉字一律压缩】,例如"指纹识别器无法使用"→"指纹失灵"、"亚马逊退款需30天"→"退款慢"、"与4TB Teamgroup固态硬盘不兼容"→"SSD不兼容"、"无线键盘鼠标接到背面USB口干扰严重"→"外设干扰"、"无法在Windows里设置PIN针"→"PIN设置失败"。
+	·【购买原因 / 应用场景 / 产品优势 / 问题反馈】标签应简洁但必须完整保留对象、条件、结果和关键限定，通常 2~12 字，必要时允许更长；不得为了压缩而丢掉“多任务、高负载、游戏、开机”等关键条件，也不得把不同事实合并成一个模糊词。
 
-【五个字段】
-- 应用场景：用户【拿这台迷你电脑来做什么】的用途。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、做媒体服务器、视频监控、跑虚拟机、编程；原文提到几个用途就抽几个。设备本身/一个动作/泛词（电脑、运行、性能、设置）不算。【务必概括成 2~6 字核心用途，绝不照抄长句/带定语宾语的动作】：如"设计3D打印用的水培零件"→"3D打印"、"运行消耗大量资源的程序和进程"→"跑重载程序"、"托管家庭游戏服务器"→"游戏服务器"、"向电视投屏流媒体服务"→"投屏观影"、"运行大型本地大语言模型"→"跑本地大模型"；任何标签超过 8 个汉字一律压缩。
-- 产品优势：用户夸的、且【说清了好在哪个具体方面】的优点，用最简短的词（如 速度快、体积小巧、安静、性价比高、散热好、接口丰富、可升级）。【用户专门花篇幅夸客服/售后/换货体验好，要抽成 客服好 / 售后好 / 保修给力；但原文【压根没提】客服/售后/服务/退换的，绝不许凭空抽"客服好"】。【纯笼统、没说好在哪的夸赞不要抽】（如 不错、好电脑、很棒、推荐、表现好、非常满意、最高品质、物超所值、超出预期、完美、顶级、宏伟 —— 这种没信息量，跳过）。【外观类要分清：漂亮/时尚/好看/设计好看→"外观好看"，做工/用料/扎实/质感→"做工好"，别混】。【只写规格里【真出现】的：原文只说"WiFi信号好/网速快"就写"WiFi好"，【绝不脑补版本号】写成 WiFi6】。【★关键：只抽产品【本身自带】的优点；用户【自己动手调优/改设置/关boost/限功率之后】才变好的（如"关掉Core boost后就安静了""限制99%性能后不烫了"），那是【对缺点的补救】，绝不能抽成产品优势——这种情况该抽的是对应的【问题反馈】】。【一律概括成 2~6 字核心词，绝不照抄长句/带定语宾语；如"多任务处理能力出色"→"多任务强"、"照片处理速度绰绰有余"→"修图流畅"、"Oculink扩展接口支持大型游戏"→"可外接显卡"；任何标签超过 8 个汉字一律压缩】。
-- 问题反馈：用户反映的【每一个具体】缺点或故障，用【最简短的核心词】概括（2~6 字优先，如 风扇吵、4K卡顿、蓝牙故障、开机慢、内存焊死、无法开机、指纹失灵、退款慢），【绝不照抄整句；如"无线2.4G键鼠接背面USB口干扰严重"→"外设干扰"、"内存完整性无法启用"→"内存完整性异常"；任何标签超过 8 个汉字一律压缩】。【★只抽用户【真当成缺点抱怨】的：用户明说"在可接受范围/不烦人/正常/能接受"的，【不算问题】，别抽（如"高负载风扇稍大但可接受"就不是散热差）】。【★内存问题要分清、别都写"内存不兼容"：内存焊死拆不了→"内存焊死"，内存插槽难拆装→"内存难装"，16G不够用要加到32G→"内存不足"，插了高频条却降频/两条不识别→才是"内存不兼容"】。【★"无法开机"专指【根本开不了机/点不亮】；"开机后风扇就全速运转/一开机就吵"是风扇问题→抽"风扇吵"，绝不能抽成"无法开机"】。没有明确问题就留空，别写 其他、一般、还行。
-- 相关软件：【只能填原文里逐字真实出现过的】软件 / 操作系统 / 游戏 / App 名（如 Windows 11、Ubuntu、Frigate、Plex、Steam、Home Assistant、Docker、Samba）；【★别漏游戏和常用软件：原文点名的【游戏】(如 Minecraft、Roblox、《7 Days to Die》)、【办公/创作软件】(如 PowerPoint、Office、Photoshop) 都要抽全，一个不落】；【一律照原文写完整全名,绝不简写、绝不缩写、绝不只写一半】(原文写 Home Assistant 就写 Home Assistant、不要缩成 HA;写 Stable Diffusion 就写全、不要缩成 SD)；中文游戏名加《》。【绝不许凭语境脑补】——比如原文只写了芯片/型号、根本没出现"Windows"几个字，就【绝不许】填 Windows；原文没出现该软件名的字就留空。【★不是软件名的普通英文词别当软件抽：如 See/Skip(快进跳过)、Play/Pause、Boost、Turbo、On/Off 这类是普通英文动作词，【绝不是软件】，不要写进来】。【绝不换名·原文是哪个名字就写哪个】——原文写"使命召唤"就写 使命召唤、绝不写成 CSGO;写 Doom/毁灭战士 就写 Doom、绝不换成 MechWarrior5 等别的游戏;写 Arch Linux 就写 Arch Linux、绝不写成 Ubuntu。原文只说笼统的"玩游戏 / 玩3A大作 / 跑服务器 / 装了个系统"、没点出具体名字的，软件栏就【留空】，绝不替它补一个具体软件名。【下面这些都不算软件、绝不要写】：① 硬件/接口/配件/芯片（HDMI、固态硬盘、显卡、内存、KVM、USB Coral、树莓派）；② 电脑机型/产品型号（Nucbox M5、UM890、Neptune HX99G、AI X1 Pro）；③ CPU/显卡型号（Radeon Vega、Ryzen 7、Intel N100）；④ 宽带/网络服务（Google Fiber）；⑤ 命令行指令（sudo、grub、apt 这类）；⑥ 网站/论坛名（Reddit、官网）；⑦ 没具体产品名的笼统"XX驱动 / XX控制软件"；⑧ 操作系统自带功能（Windows辅助功能、Windows安全中心）。
+【六个字段】
+- 应用场景：用户【拿这台迷你电脑来做什么】的用途。判断标准——能填进"我用它来＿＿"或"把它当＿＿用"才算，例如 办公、玩游戏、看视频、做媒体服务器、视频监控、跑虚拟机、编程；原文提到几个用途就抽几个。设备本身/一个动作/泛词（电脑、运行、性能、设置）不算。标签应概括用途，但必须保留能区分场景的关键对象和条件：如"设计3D打印用的水培零件"→"3D打印"、"运行消耗大量资源的程序和进程"→"跑重载程序"、"托管家庭游戏服务器"→"家庭游戏服务器"、"向电视投屏流媒体服务"→"电视投屏观影"、"运行大型本地大语言模型"→"运行本地大模型"。
+- 产品优势：用户明确认可的正面评价全部提取。具体优点如 运行速度快、体积小巧、安静、性价比高、散热好、接口丰富、可升级；概括性正面评价也必须保留并规范为 整体满意、值得推荐、符合描述、超出预期、整体体验好 等对应标签。【用户专门花篇幅夸客服/售后/换货体验好，要抽成 客服好 / 售后好 / 保修给力；但原文【压根没提】客服/售后/服务/退换的，绝不许凭空抽"客服好"】。【外观类要分清：漂亮/时尚/好看/设计好看→"外观好看"，做工/用料/扎实/质感→"做工好"，别混】。【只写规格里【真出现】的：原文只说"WiFi信号好/网速快"就写"WiFi好"，【绝不脑补版本号】写成 WiFi6】。【★关键：只抽产品【本身自带】的优点；用户【自己动手调优/改设置/关boost/限功率之后】才变好的（如"关掉Core boost后就安静了""限制99%性能后不烫了"），那是【对缺点的补救】，绝不能抽成产品优势——这种情况该抽的是对应的【问题反馈】】。必须保留评价对象和条件，如"多任务处理能力出色"→"多任务运行流畅"、"照片处理速度绰绰有余"→"照片处理流畅"、"Oculink扩展接口支持大型游戏"→"Oculink可外接显卡"。
+- 问题反馈：用户反映的【每一个具体】缺点或故障都提取；概括性负面评价也必须保留并规范为 整体失望、不值得推荐、不符合描述、低于预期、整体体验差 等对应标签。标签应简洁但保留对象和条件，例如 高负载风扇吵、4K播放卡顿、蓝牙连接故障、开机速度慢、内存焊死、无法开机、指纹识别失灵、退款处理慢；不要把不同问题压成一个泛词。【★只抽用户【真当成缺点抱怨】的：用户明说"在可接受范围/不烦人/正常/能接受"的，【不算问题】，别抽（如"高负载风扇稍大但可接受"就不是散热差）】。【★内存问题要分清、别都写"内存不兼容"：内存焊死拆不了→"内存焊死"，内存插槽难拆装→"内存难装"，16G不够用要加到32G→"内存不足"，插了高频条却降频/两条不识别→才是"内存不兼容"】。【★"无法开机"专指【根本开不了机/点不亮】；"开机后风扇就全速运转/一开机就吵"是风扇问题→抽"开机后风扇吵"，绝不能抽成"无法开机"】。没有负面评价就留空，别写 其他、一般、还行。
+- 软件：【只能填评论里逐字真实出现过的】操作系统、应用、工具或游戏平台。Steam、Epic、Steam Big Picture、CachyOS、LMStudio 属于软件；不得放入游戏。名称必须完整照抄，Windows 11 Pro 24H2 不能缩成 Windows 11。
+- 游戏：【只能填评论里逐字真实出现过的具体游戏名】。火箭联盟、堡垒之夜、漫威对决、铁拳 8、跳跃空间、Crimson Desert 等属于游戏；“玩游戏/AAA游戏”这种泛称不填；Steam、Epic、Xbox、Steam Big Picture 是平台，不是具体游戏。
 - 购买原因：用户【为什么买这台】的动机/原因。判断标准——能填进"我买它是为了＿＿"或"因为＿＿才买"才算，例如 送礼/送家人、替换旧电脑、性价比高、想要台小机器、为了某用途才买（跑监控/做服务器）、升级配置。【★别漏"替换/取代旧设备"：原文只要出现"替换/取代/退役 我的旧电脑/旧笔记本/旧台式机""因为Win10停止支持才换""老机器太慢想换"这类，就【必须】抽"替换旧电脑"，这是高发漏抽点】。【只填原文真说了购买动机的】；原文没提为什么买就留空。别把单纯的"用途"硬塞这里——用途归应用场景，购买原因强调"为什么买"。
 
-只输出一个 JSON 对象（每个字段都是数组，一个元素一个标签，没有就给空数组 []），不要任何额外文字、不要 markdown：
-{"应用场景":[],"产品优势":[],"问题反馈":[],"相关软件":[],"购买原因":[]}
+【证据强制】每个数组元素必须是 {"标签":"...","证据":"评论中的连续原句"}。证据必须逐字出现在评论中；找不到可逐字引用的证据就不要输出该标签。软件和游戏的“标签”必须使用证据中的完整名称。没有就给空数组。
+只输出一个 JSON 对象，不要任何额外文字、不要 markdown：
+{"应用场景":[],"产品优势":[],"问题反馈":[],"软件":[],"游戏":[],"购买原因":[]}
 
 评论：
 ${review}`;
@@ -490,7 +529,7 @@ function parseAIJson(text){
       const r = t.match(new RegExp('"'+k+'"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"'));
       return r ? r[1].replace(/\\"/g,'"').replace(/\\n/g," ").trim() : "";
     };
-    return {"应用场景":grab("应用场景"),"产品优势":grab("产品优势"),"问题反馈":grab("问题反馈"),"相关软件":grab("相关软件")};
+    return {"应用场景":grab("应用场景"),"产品优势":grab("产品优势"),"问题反馈":grab("问题反馈"),"软件":grab("软件"),"游戏":grab("游戏"),"购买原因":grab("购买原因")};
   }
 }
 
@@ -521,6 +560,40 @@ function cleanField(v){
     .filter(x=> x && x!=="《》" && x!=="无" && x!=="无。" && x.toLowerCase()!=="nan" && x!=="N/A")
     .filter(x=>{ if(seen.has(x)) return false; seen.add(x); return true; })
     .join("、");
+}
+
+/* V4.3:六维标签必须携带评论原句证据。AI返回无证据、证据不在评论中、或旧版字符串格式时一律不采纳。 */
+function cleanEvidenceField(v, reviewText){
+  if(!Array.isArray(v)) return "";
+  const hay = String(reviewText||"").replace(/\s+/g,"").toLowerCase();
+  const labels = [];
+  v.forEach(it=>{
+    if(!it || typeof it!=="object") return;
+    const label = String(it["标签"]||it.label||"").trim();
+    const evidence = String(it["证据"]||it.evidence||"").trim();
+    if(!label || !evidence) return;
+    const needle = evidence.replace(/\s+/g,"").toLowerCase();
+    if(needle.length<2 || !hay.includes(needle)) return;
+    labels.push(label);
+  });
+  return cleanField(labels);
+}
+
+function addTag(value, tag){
+  return cleanField([value,tag].filter(Boolean).join("、"));
+}
+/* V4.3:只补原文中可确定、且高频漏提的事实；规则必须有直接文字证据，不做语义猜测。 */
+function supplementExplicitFacts(d, text){
+  const t=String(text||"");
+  if(/prime\s*day.{0,12}(折扣|优惠)|额外折扣|因为.{0,8}(折扣|优惠).{0,8}(买|购买)|利用.{0,8}(折扣|优惠)/i.test(t))
+    d["购买原因"]=addTag(d["购买原因"],"价格优惠");
+  if(!/(不|并不|没有|并没有).{0,3}(强大|性能强)/.test(t) && /性能.{0,3}(强大|强劲|出色)|确实强大|非常强大|功能强大|性能强劲/.test(t))
+    d["产品优势"]=addTag(d["产品优势"],"性能强");
+  if(/(停止|无法|不能|根本不).{0,5}(开机|启动|点亮)|不再开机|开不了机/.test(t))
+    d["问题反馈"]=addTag(d["问题反馈"],"无法开机");
+  if(/(没有|缺少|未安装|根本没有).{0,8}(oculink|Occulink).{0,5}(端口|接口|连接)?|(oculink|Occulink).{0,8}(没有|缺失|未安装)/i.test(t))
+    d["问题反馈"]=addTag(d["问题反馈"],"Oculink接口缺失");
+  return d;
 }
 
 /* ---------- 汇总统计(按次数降序,>=2标次数) ---------- */
@@ -609,7 +682,7 @@ async function aggregateField(key, fieldName, tags){
     dropRule = "不是\"购买动机\"的词——纯用途/纯评价/泛词，例如 办公、好用、不错、电脑、性能";
   }else{ // 产品优势
     kind = "用户夸的优点（如 运行速度快、体积小巧、性价比高、散热好）";
-    dropRule = "完全空泛、等于没说的词，例如 好、不错、一般、可以、还行（除此之外的优点【全部保留】）";
+    dropRule = "没有评价方向、不能表达正面态度的占位词，例如 一般、可以、还行；整体满意、值得推荐、符合描述、超出预期、整体体验好等概括性正面评价【必须保留】";
   }
   const prompt = `下面是从某迷你电脑评论里如实提取的"${fieldName}"候选标签（已去重）。这一栏【只应该放】：${kind}。
 
@@ -668,7 +741,7 @@ function applyAgg(value, m){
 
 /* 第二遍主入口:四个字段【各自一次】纯文本归并(并行),flash 稳吐。某字段失败只影响该字段,不整体崩 */
 async function aggregateModel(key, details, onField){
-  const fields = ["应用场景","产品优势","问题反馈","相关软件","购买原因"];
+  const fields = ["应用场景","产品优势","问题反馈","购买原因"];
   const results = await Promise.all(fields.map(async f=>{
     const tags = distinctTags(details, f);
     try{
@@ -725,7 +798,7 @@ $("startBtn").onclick = async ()=>{
     const ws = rawWorkbook.Sheets[sn];
     const direct = readReviewColumn(ws);              // V2.7:null=没有「评论内容」列;[]=有列但全空;[...]=有评论
     const reviews = direct || cleanSheet(ws);          // 没列(null)才退回爬虫格式清洗;direct=[] 是真值不会误退
-    cleanedAll[sn] = {reviews};
+    cleanedAll[sn] = {reviews, sourceRows: reviews._sourceRows || []};
     totalReviews += reviews.length;
     if(direct && reviews.length===0)        logLine(`型号 [${sn}] 识别到「评论内容」列但内容全为空 → 0 条,请检查该列`, "warn");
     else if(!direct && reviews.length===0)  logLine(`型号 [${sn}] 未识别到「评论内容」列、也不是爬虫格式 → 0 条,请检查表头是否含「评论内容」`, "warn");
@@ -741,7 +814,7 @@ $("startBtn").onclick = async ()=>{
     logLine(`型号 [${sn}]:从评论内容重新提取标签（逐条并发 ${CONCURRENCY}）…`, "ai");
     let details;
     try{
-      // 逐条并发:英文先单独翻译成中文,再从中文里完整提取四字段;鉴权错→整体中止
+      // 逐条并发:英/德/法/西/意/葡/日先翻译成中文,中文直接分析,再完整提取五字段;鉴权错→整体中止
       details = await mapPool(reviews, CONCURRENCY, async (review, i)=>{
         let text = review;
         if(needsTranslate(review)) text = await translateReview(key, review);
@@ -759,14 +832,18 @@ $("startBtn").onclick = async ()=>{
         }
         done++; reviewsDone++;
         setProgress(done, totalUnits, `重新提取中：${sn}（${reviewsDone}/${totalReviews} 条）`, startTime);
-        return {
+        const detail = {
           "评论内容": text,
-          "应用场景": cleanField(parsed["应用场景"]||""),
-          "产品优势": cleanField(parsed["产品优势"]||""),
-          "问题反馈": cleanField(parsed["问题反馈"]||""),
-          "相关软件": verifySoftware(cleanField(parsed["相关软件"]||""), review, text),  // V2.7:去编造校验(review=英文原文,text=中文译文)
-          "购买原因": cleanField(parsed["购买原因"]||"")   // V3.0:范本产品表的 F 列
+          "__sourceRow": item.sourceRows[i] || null,
+          "应用场景": cleanEvidenceField(parsed["应用场景"], text),
+          "产品优势": cleanEvidenceField(parsed["产品优势"], text),
+          "问题反馈": cleanEvidenceField(parsed["问题反馈"], text),
+          "软件": verifySoftware(cleanEvidenceField(parsed["软件"], text), review, text),
+          "游戏": verifySoftware(cleanEvidenceField(parsed["游戏"], text), review, text),
+          "相关软件": [verifySoftware(cleanEvidenceField(parsed["软件"], text), review, text),verifySoftware(cleanEvidenceField(parsed["游戏"], text), review, text)].filter(Boolean).join("、"),
+          "购买原因": cleanEvidenceField(parsed["购买原因"], text)
         };
+        return supplementExplicitFacts(detail, text);
       });
     }catch(err){
       if(err && err.__auth){
@@ -792,9 +869,8 @@ $("startBtn").onclick = async ()=>{
   }
   }  // end else（仅"无表头汇总"时才走上面这段 AI 提取）
 
-  // V4.1【第二遍归并·统一接入】——此前 aggregateModel/applyAgg 是死代码(定义了从没被调用),导致同义碎片never收敛(速度快/运行快/开机快各占一行、总结页一个大类摊几十行)。
-  //   现放在两条路径(①②读现成明细 / ③④AI提取)汇合后、总结页之前,对每个机型四字段做一次 AI 归并(带代码守门防跨维度错归),套成标准词后【重算 summary】。
-  //   实测:产品优势总组数 147→62(-58%)、"运行顺畅"大类 sub 31→16。某机型失败只影响该机型、退回不归并。勾不勾总结表都做(单机型汇总也受益)。
+  // 第二遍同义归并只服务于顶部5行汇总：每行明细保留AI逐句提取出的具体标签，不再被宽泛标准词覆盖。
+  // 归并只处理四个中文分析字段；软件和游戏名称始终保持原文。
   {
     const _names = Object.keys(resultData);
     for(let _i=0; _i<_names.length; _i++){
@@ -803,8 +879,10 @@ $("startBtn").onclick = async ()=>{
       try{
         logLine(`型号 [${sn}]:第二遍归并(四字段同义收敛)…`, "ai");
         const maps = await aggregateModel(key, o.details, null);
-        o.details.forEach(d=>{ ["应用场景","产品优势","问题反馈","相关软件","购买原因"].forEach(f=>{ d[f] = applyAgg(d[f], maps[f]); }); });
-        ["应用场景","产品优势","问题反馈","相关软件","购买原因"].forEach(f=>{ o.summary[f] = summarize(o.details, f); });  // 归并改了明细→重算汇总
+        // 在副本上套同义标准词，只用来重算汇总；o.details 明细不改。
+        const summaryDetails = o.details.map(d=> Object.assign({}, d));
+        summaryDetails.forEach(d=>{ ["应用场景","产品优势","问题反馈","购买原因"].forEach(f=>{ d[f] = applyAgg(d[f], maps[f]); }); });
+        ["应用场景","产品优势","问题反馈","相关软件","购买原因"].forEach(f=>{ o.summary[f] = summarize(summaryDetails, f); });
       }catch(err){
         if(err && err.__auth){ logLine("API Key 无效或鉴权失败，已停止。", "err"); $("startBtn").disabled=false; return; }
         logLine(`型号 [${sn}] 归并失败(${err.message})，保持不归并`, "warn");
@@ -1132,8 +1210,9 @@ function parseExistingDetail(wb){
     for(let i=hr+1;i<rows.length;i++){
       const r=rows[i]||[]; const g=k=> col[k]!=null ? String(r[col[k]]==null?"":r[col[k]]).trim() : "";
       const content=g("评论内容"); if(!content) continue;
-      const sw = g("相关软件") || [g("软件"),g("游戏")].filter(Boolean).join("、");
-      details.push({"评论内容":content,"应用场景":g("应用场景"),"产品优势":g("产品优势"),"问题反馈":g("问题反馈"),"相关软件":sw,"购买原因":g("购买原因")});
+      const software=g("软件"), game=g("游戏");
+      const sw = g("相关软件") || [software,game].filter(Boolean).join("、");
+      details.push({"评论内容":content,"应用场景":g("应用场景"),"产品优势":g("产品优势"),"问题反馈":g("问题反馈"),"软件":software,"游戏":game,"相关软件":sw,"购买原因":g("购买原因"),"__sourceRow":i+1});
     }
     if(details.length){ const summary={}; ["应用场景","产品优势","问题反馈","相关软件","购买原因"].forEach(f=> summary[f]=summarize(details,f)); out[sn]={details, summary}; }
   });
@@ -1158,21 +1237,21 @@ function buildTopBlocksFromDetails(rd){
   return res;
 }
 /* ===== V3.9:②③④混合归类 = 代码命中已知词(稳·0崩) + AI兜底新词(小批·安全) + 导出新词清单(待agent核对入库) ===== */
-function isGameItem(n){ const g=(SOFTWARE_CATS.find(c=>c.name==="游戏")||{}).re; return (g&&g.test(n))||/《.+》/.test(n)||/\bsteam\b|epic|xbox|retroarch|游戏/i.test(n); }
+function isGameItem(n){
+  n=String(n||"");
+  if(/\bsteam\b|steam big picture|\bepic\b|xbox|game ?pass|retroarch|emulationstation|cachyos/i.test(n)) return false;
+  const g=(SOFTWARE_CATS.find(c=>c.name==="游戏")||{}).re;
+  return /《.+》|火箭联盟|漫威对决|跳跃空间|crimson desert|红色沙漠|堡垒之夜|铁拳|古墓丽影|对马岛|地平线/i.test(n)||(g&&g.test(n));
+}
 function gameNorm(n){ n=String(n).replace(/[《》]/g,"").trim();
   if(/minecraft|我的世界/i.test(n))return "Minecraft/我的世界"; if(/模拟人生/.test(n))return "模拟人生4";
   if(/roblox/i.test(n))return "Roblox"; if(/csgo|cs2|反恐精英/i.test(n))return "CS:GO/CS2";
   if(/守望先锋|overwatch/i.test(n))return "守望先锋"; if(/使命召唤/.test(n))return "使命召唤";
   if(/^steam|steam ?link|steam ?os/i.test(n))return "Steam"; return n; }
 function swNorm(n){
-  // V4.1精修:只把真·Win11桌面版的各种写法归一;排除 Win10/Server/Defender/辅助功能(不同东西)、以及带"Windows"的游戏名(如 Final Fantasy 15 Windows Edition)
-  if(/windows ?1[0-9]|win ?1[0-9]|windows server|defender|辅助功能|autopilot|edition|final fantasy|游戏|edition$/i.test(n)){
-    if(/windows ?11|win ?11|windows 11|^windows$|windows ?pro|windows专业版|windows 专业版|win专业版|win11/i.test(n) && !/windows ?10|win ?10|server|defender|辅助功能|autopilot|edition|fantasy/i.test(n)) return "Windows 11";
-    // 其余含Windows的特殊项(Win10/Server/Defender/游戏名)保持原样,不并进Win11
-  } else if(/windows|^win ?1/i.test(n)) return "Windows 11";
-  if(/^office|microsoft 365|office 365|ms office|microsoft office|微软 ?3|^办公软件$/i.test(n))return "Microsoft Office";
-  if(/deepseek/i.test(n))return "DeepSeek"; if(/photoshop|pscs/i.test(n))return "Photoshop";
-  if(/adrenalin|radeon|^amd$/i.test(n))return "AMD驱动"; if(/^proxmox$/i.test(n))return "Proxmox"; if(/ubuntu/i.test(n))return "Ubuntu"; return n; }
+  // V4.3:明细和汇总的专有名称都保留原样，不再把 Windows 11 Pro/24H2 等缩短。
+  return String(n||"").trim();
+}
 const SW_RULES=[
  ["系统与驱动",/windows|win ?1|linux|ubuntu|debian|fedora|freebsd|unix|mint|bazzite|talos|系统工具|专业软件|bios|\bamd\b|radeon|adrenalin|quicksync|vulkan|驱动|rufus|macrium|nirsoft|produkey|getfancontrol|time ?spy|unigine|superposition|cpu-?z|crystaldisk|prime ?9|furmark|\bhwi\b|arduino|raspberry|bosgame|autopilot|ltsc/i],
  ["内容与创作",/plex|emby|jellyfin|kodi|\bvlc\b|youtube|itunes|apple music|foobar|twitch|hulu|媒体播放|handbrake|cap ?cut|format factory|virtual dj|adobe|photoshop|lightroom|\bps\b|affinity|davinci|达芬奇|premiere|freecad|autodesk|fusion|inventor|\bcad\b|slicer|ableton|fl ?studio|视频编辑/i],
@@ -1180,6 +1259,7 @@ const SW_RULES=[
  ["开发与运维",/docker|proxmox|unraid|nginx|pihole|adguard|home assistant|blue iris|frigate|samba|geforce now|malwarebytes|bitdefender|杀毒|防病毒|yunohost|3cx|\bpos|vmware|\bsql\b/i],
 ];
 const PROD_RULES=[
+ ["整体正面评价",/整体满意|非常满意|完全满意|满意|值得推荐|强烈推荐|推荐购买|符合描述|符合预期|超出预期|整体体验好|产品好|好电脑|很棒|完美/],
  ["机身小巧",/体积|小巧|紧凑|迷你|便携|轻便|轻巧|尺寸|占地|节省空间|占用空间小|重量轻|轻|支架/],
  ["性价比高",/性价比|物超所值|物有所值|划算|实惠|超值|低价|价格便宜|价格低|价格合理|价格不错|价格好|价格亲民|便宜/],
  ["运行安静",/安静|静音|噪音|低噪|无声|声音小/],
@@ -1197,6 +1277,7 @@ const PROD_RULES=[
  ["服务体验好",/售后|客服|客户|技术支持|保修|质保|退换/],
 ];
 const PROB_RULES=[
+ ["整体负面评价",/整体失望|非常失望|失望|不值得推荐|不推荐|不符合描述|低于预期|整体体验差|体验不好|体验很差|质量不行|完全不能用/],
  ["售后服务差",/售后|客服|客户服务|退款|保修|质保|退换货|退货|支持差|客户支持差|虚假宣传|货不对板/],
  ["连接不稳/网络故障",/蓝牙|wi-?fi|wifi|网络|断网|无法上网|以太网/i],
  ["散热差/噪音大",/噪音|咔哒|风扇|散热|发热|温度|运行热|过热|嗡嗡/],
@@ -1251,8 +1332,8 @@ function codeRouteOne(dim, w){
 /* V3.9.3:新词【简化归类】——只让AI把每个新词各选一个固定大类(扁平map),比序号制groups稳得多(输出小·不易截断);失败/没匹配也只落 catchall 或 canonScene,【绝不退回原始词当大类】。根治"聚类两次都未成→退回原始未合并"。 */
 const FIXED_BIGS={
  "应用场景": SCENE_CANON,
- "产品优势": ["机身小巧","运行顺畅","性价比高","性能强劲","运行安静","散热良好","简单易用","接口丰富","扩展性强","做工精良","容量充足","外观好看","功耗低","稳定性好","服务体验好","产品好"],
- "问题反馈": ["系统不稳定/频繁异常","散热差/噪音大","连接不稳/网络故障","性能差/运行慢","系统与软件缺陷","内存存储不足/不可升级","接口不够/故障多","显示异常/音视频输出问题","品控做工差","售后服务差","电源/适配器故障","性价比低","整机可靠性差/综合硬件故障"],
+ "产品优势": ["整体正面评价","机身小巧","运行顺畅","性价比高","性能强劲","运行安静","散热良好","简单易用","接口丰富","扩展性强","做工精良","容量充足","外观好看","功耗低","稳定性好","服务体验好","产品好"],
+ "问题反馈": ["整体负面评价","系统不稳定/频繁异常","散热差/噪音大","连接不稳/网络故障","性能差/运行慢","系统与软件缺陷","内存存储不足/不可升级","接口不够/故障多","显示异常/音视频输出问题","品控做工差","售后服务差","电源/适配器故障","性价比低","整机可靠性差/综合硬件故障"],
  "相关软件": ["系统与驱动","内容与创作","效率与办公","开发与运维","娱乐游戏"],
 };
 async function classifyNewWords(key, dim, words){
@@ -1531,34 +1612,58 @@ $("downloadBtn").onclick = async ()=>{
     // V3.9.1:按用户要求，导出里【不再显示】"本次新词"那块(新词仍在内部统计、agent核对走对话,不进交付表)。
   }
   // V3.0:把「相关软件」按 SOFTWARE_CATS 的游戏规则拆成 游戏 / 其它软件 两栏(对标范本 J/K 列),纯确定性分流、不调AI
-  const GAME_RE = (SOFTWARE_CATS.find(c=> c.name==="游戏")||{}).re;
-  const splitGameSw = (swStr)=>{ const g=[], s=[]; splitTags(swStr).forEach(t=>{ (GAME_RE && GAME_RE.test(t) ? g : s).push(t); }); return [g.join("、"), s.join("、")]; };
+  const splitGameSw = (swStr)=>{ const g=[], s=[]; splitTags(swStr).forEach(t=>{ (isGameItem(t) ? g : s).push(t); }); return [g.join("、"), s.join("、")]; };
+  /* 产品明细只输出评论内容和六个分析列；标题、CPU、星级、评论人、国家、时间不导出。
+     每个原始数据行和原顺序保留；顶部5行汇总只保留一遍。 */
+  const normHeader = v=> String(v==null?"":v).replace(/\s+/g,"").toLowerCase();
+  const isReviewHeaderOut = v=> /^(\u8bc4\u8bba|\u8bc4\u4ef7)(\u5185\u5bb9|\u6b63\u6587|\u6587\u672c|\u8be6\u60c5)?$|^\u7528\u6237(\u8bc4\u8bba|\u8bc4\u4ef7)$|^\u6b63\u6587$|^(review|comment)s?(content|text)?$/.test(normHeader(v));
   Object.keys(resultData).forEach(name=>{
     const {details, summary} = resultData[name];
+    const src = rawWorkbook && rawWorkbook.Sheets[name];
+    const originalRows = src ? XLSX.utils.sheet_to_json(src,{header:1,defval:null,blankrows:true}) : [];
+    let headerIndex = originalRows.findIndex(r=> (r||[]).some(isReviewHeaderOut));
+    if(headerIndex < 0) headerIndex = 0;   // 爬虫 a-size-base 宽表的表头在第1行
+    const hadTopFive = originalRows.slice(0,headerIndex).some(r=> (r||[]).some(v=> /^(\u5e94\u7528\u573a\u666f|\u4ea7\u54c1\u4f18\u52bf|\u95ee\u9898\u53cd\u9988|\u76f8\u5173\u8f6f\u4ef6)\s*[：:]/.test(String(v||"").trim())));
+    const sourceStart = hadTopFive ? headerIndex : 0;   // 已有结果表:去掉旧汇总前缀，下面统一重建5行
+    const bodyRows = originalRows.slice(sourceStart).map(r=> (r||[]).slice());
+    const localHeaderIndex = Math.max(0, headerIndex-sourceStart);
+    const originalHeader = (originalRows[headerIndex]||[]).slice();
+    const analysisHeaders = ["购买原因","应用场景","产品优势","问题反馈","游戏","软件"];
+    let reviewCols=[];
+    originalHeader.forEach((h,i)=>{ if(isReviewHeaderOut(h)) reviewCols.push(i); });
+    if(!reviewCols.length) originalHeader.forEach((h,i)=>{
+      const s=normHeader(h); if(s.indexOf("a-size-base")===0 && !/href|src|helpful|profile-name|icon-alt/.test(s)) reviewCols.push(i);
+    });
+    if(!reviewCols.length) reviewCols=[0];
+    const rawCommentAt=srcRow=>reviewCols.map(i=>String(srcRow[i]==null?"":srcRow[i]).trim()).filter(Boolean).join("\n");
+
+    const detailByRow = new Map();
+    (details||[]).forEach(d=>{ if(d && Number.isInteger(d.__sourceRow)) detailByRow.set(d.__sourceRow,d); });
     const ws = wb.addWorksheet(name.slice(0,31));
-    ws.columns = [{width:58},{width:16},{width:16},{width:18},{width:18},{width:16},{width:18}];
-    // 顶部汇总(加粗):购买原因/应用场景/产品优势/问题反馈/相关软件
+    ws.columns = [{width:68},{width:24},{width:28},{width:34},{width:38},{width:28},{width:34}];
+
     [["购买原因：",summary["购买原因"]],["应用场景：",summary["应用场景"]],["产品优势：",summary["产品优势"]],
      ["问题反馈：",summary["问题反馈"]],["相关软件：",summary["相关软件"]]].forEach(([k,v])=>{
-      const row = ws.addRow([summaryRich(k, v)]);     // 富文本:字段名加粗 + 前3次数标红
-      row.getCell(1).alignment = {wrapText:true, vertical:"top"};
+      const row=ws.addRow([summaryRich(k,v)]); row.getCell(1).alignment={wrapText:true,vertical:"top"};
     });
-    // 明细表头(7列,对标范本 F-K):评论内容|购买原因|应用场景|产品优势|问题反馈|游戏|软件
-    const head = ws.addRow(["评论内容","购买原因","应用场景","产品优势","问题反馈","游戏","软件"]);
-    head.eachCell(cell=>{
-      cell.font = {bold:true};
-      cell.fill = {type:"pattern", pattern:"solid", fgColor:{argb:"FFDCE6F1"}}; // 浅蓝底
-      cell.alignment = {horizontal:"center", vertical:"center"};
-      cell.border = {
-        top:{style:"thin",color:{argb:"FF4472C4"}}, bottom:{style:"thin",color:{argb:"FF4472C4"}},
-        left:{style:"thin",color:{argb:"FF4472C4"}}, right:{style:"thin",color:{argb:"FF4472C4"}}
-      };
-    });
-    // 明细数据
-    details.forEach(d=>{
-      const [games, sw] = splitGameSw(d["相关软件"]);
-      const row = ws.addRow([d["评论内容"], d["购买原因"]||"", d["应用场景"], d["产品优势"], d["问题反馈"], games, sw]);
-      row.getCell(1).alignment = {wrapText:true, vertical:"top"};
+
+    bodyRows.forEach((srcRow,j)=>{
+      const originalRowNumber = sourceStart+j+1;   // SheetJS 索引→Excel 1-based 原行号
+      if(j===localHeaderIndex){
+        const row=ws.addRow(["评论内容",...analysisHeaders]);
+        row.eachCell(cell=>{ cell.font={bold:true}; cell.fill={type:"pattern",pattern:"solid",fgColor:{argb:"FFDCE6F1"}}; cell.alignment={horizontal:"center",vertical:"center"}; });
+        return;
+      }
+      const d = detailByRow.get(originalRowNumber);
+      let vals=[rawCommentAt(srcRow),"","","","","",""];
+      if(d){
+        const [fallbackGames, fallbackSw] = splitGameSw(d["相关软件"]);
+        const games = d["游戏"]!=null ? d["游戏"] : fallbackGames;
+        const sw = d["软件"]!=null ? d["软件"] : fallbackSw;
+        vals=[d["评论内容"]||rawCommentAt(srcRow),d["购买原因"]||"",d["应用场景"]||"",d["产品优势"]||"",d["问题反馈"]||"",games,sw];
+      }
+      const row=ws.addRow(vals);
+      row.eachCell(cell=>{ cell.alignment={wrapText:true,vertical:"top"}; });
     });
   });
   const buf = await wb.xlsx.writeBuffer();
